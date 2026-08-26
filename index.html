@@ -68,19 +68,28 @@
           : "";
       } else if (state === "err") {
         icon.textContent = "⚠️";
-        title.textContent = "Couldn't reach Deep Dive";
+        title.textContent = "Couldn't send feedback";
         subtitle.className = "err";
-        subtitle.textContent = "Your feedback wasn't logged. You can close this tab and try the button again.";
+        subtitle.textContent = "Something went wrong. Close this tab and try the button again.";
         detail.textContent = "";
       }
     }
 
+    // Send the payload as JSON in a form field. The Deep Dive Feedback
+    // webhook wraps this under trigger_data.payload; the agent reads
+    // trigger_data.payload.json and JSON.parse's it to get the fields.
+    // We use "no-cors" so the browser doesn't preflight — trade-off is
+    // we can't read the response, so we optimistically report success.
+    const body = new URLSearchParams();
+    body.set("json", JSON.stringify(payload));
+
     fetch(WEBHOOK_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      mode: "no-cors",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
     })
-    .then(r => r.ok ? render("ok") : render("err"))
+    .then(() => render("ok"))
     .catch(() => render("err"));
   </script>
 </body>
