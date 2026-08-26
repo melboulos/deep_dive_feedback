@@ -22,7 +22,7 @@
     h1 { font-size: 20px; margin: 8px 0 4px; }
     p { color: #555; margin: 4px 0; font-size: 14px; }
     .detail { color: #888; font-size: 12px; margin-top: 16px; word-break: break-all; }
-    #sink { display: none; }
+    .err { color: #b00020; }
     @media (prefers-color-scheme: dark) {
       body { background: #111; }
       .card { background: #1c1c1e; }
@@ -32,18 +32,17 @@
   </style>
 </head>
 <body>
-  <div class="card" id="card">
+  <div class="card">
     <div class="icon" id="icon">⏳</div>
     <h1 id="title">Logging your feedback…</h1>
     <p id="subtitle">One sec.</p>
     <p class="detail" id="detail"></p>
   </div>
 
-  <!-- Hidden iframe: the form POSTs into this so the visible page never navigates. -->
-  <iframe name="sink" id="sink"></iframe>
-
   <script>
-    const WEBHOOK_URL = "https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-318d6a1b";
+    // Cloudflare Worker relay → forwards to the Deep Dive Feedback webhook
+    // with CORS headers so the browser can POST cross-origin.
+    const RELAY_URL = "https://rox-deep-dive-proxy.mel-boulos-97e.workers.dev";
 
     const params = new URLSearchParams(window.location.search);
     const payload = Object.fromEntries(params.entries());
@@ -57,33 +56,34 @@
 
     const meta = ACTION_META[payload.action] || { icon: "📨", label: "Feedback", copy: "Logged." };
 
-    // Build a real HTML form that POSTs the payload as a single `json` field.
-    // Targeting the hidden iframe means the browser makes a "simple" POST
-    // (no CORS preflight), so Rox actually receives the request.
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = WEBHOOK_URL;
-    form.enctype = "application/x-www-form-urlencoded";
-    form.target = "sink";
-    form.style.display = "none";
+    function render(state) {
+      const icon = document.getElementById("icon");
+      const title = document.getElementById("title");
+      const subtitle = document.getElementById("subtitle");
+      const detail = document.getElementById("detail");
+      if (state === "ok") {
+        icon.textContent = meta.icon;
+        title.textContent = meta.label + " logged";
+        subtitle.textContent = meta.copy;
+        detail.textContent = payload.account_name
+          ? `${payload.account_name} · ${payload.motion_type || ""}`.trim()
+          : "";
+      } else {
+        icon.textContent = "⚠️";
+        title.textContent = "Couldn't reach Deep Dive";
+        subtitle.className = "err";
+        subtitle.textContent = "Feedback wasn't logged. Close this tab and try the button again.";
+        detail.textContent = "";
+      }
+    }
 
-    const field = document.createElement("input");
-    field.type = "hidden";
-    field.name = "json";
-    field.value = JSON.stringify(payload);
-    form.appendChild(field);
-
-    document.body.appendChild(form);
-    form.submit();
-
-    // We can't read the response (cross-origin), so report success optimistically.
-    // The webhook fires either way; the browser just can't see the ack.
-    document.getElementById("icon").textContent = meta.icon;
-    document.getElementById("title").textContent = meta.label + " logged";
-    document.getElementById("subtitle").textContent = meta.copy;
-    document.getElementById("detail").textContent = payload.account_name
-      ? `${payload.account_name} · ${payload.motion_type || ""}`.trim()
-      : "";
+    fetch(RELAY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+    .then(r => r.ok ? render("ok") : render("err"))
+    .catch(() => render("err"));
   </script>
 </body>
 </html>
