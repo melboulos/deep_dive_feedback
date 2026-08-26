@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deep Dive — Feedback</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0; padding: 24px;
+      background: #f6f7f9;
+    }
+    .card {
+      max-width: 480px; width: 100%;
+      background: #fff; border-radius: 16px; padding: 32px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+    .icon { font-size: 48px; margin-bottom: 8px; }
+    h1 { font-size: 20px; margin: 8px 0 4px; }
+    p { color: #555; margin: 4px 0; font-size: 14px; }
+    .detail { color: #888; font-size: 12px; margin-top: 16px; word-break: break-all; }
+    .err { color: #b00020; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111; }
+      .card { background: #1c1c1e; }
+      p { color: #bbb; }
+      .detail { color: #777; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="icon" id="icon">⏳</div>
+    <h1 id="title">Logging your feedback…</h1>
+    <p id="subtitle">One sec.</p>
+    <p class="detail" id="detail"></p>
+  </div>
+
+  <script>
+    // ⬇️ REPLACE with the webhook URL from the Deep Dive Feedback agent once it exists.
+    const WEBHOOK_URL = "https://YOUR-DEEP-DIVE-FEEDBACK-WEBHOOK-URL";
+
+    const params = new URLSearchParams(window.location.search);
+    const payload = Object.fromEntries(params.entries());
+
+    const ACTION_META = {
+      pursue:          { icon: "🎯", label: "Pursue", copy: "Got it — drafting your outreach email. Check Home in a minute." },
+      watch:           { icon: "👀", label: "Watch", copy: "Logged — we'll keep an eye on this signal." },
+      wrong:           { icon: "❌", label: "Wrong", copy: "Thanks — Deep Dive will learn from this." },
+      already_working: { icon: "✅", label: "Already Working", copy: "Got it — we'll skip this motion next time." }
+    };
+
+    const meta = ACTION_META[payload.action] || { icon: "📨", label: "Feedback", copy: "Logged." };
+
+    function render(state) {
+      const icon = document.getElementById("icon");
+      const title = document.getElementById("title");
+      const subtitle = document.getElementById("subtitle");
+      const detail = document.getElementById("detail");
+      if (state === "ok") {
+        icon.textContent = meta.icon;
+        title.textContent = meta.label + " logged";
+        subtitle.textContent = meta.copy;
+        detail.textContent = payload.account_name
+          ? `${payload.account_name} · ${payload.motion_type || ""}`.trim()
+          : "";
+      } else if (state === "err") {
+        icon.textContent = "⚠️";
+        title.textContent = "Couldn't reach Deep Dive";
+        subtitle.className = "err";
+        subtitle.textContent = "Your feedback wasn't logged. You can close this tab and try the button again.";
+        detail.textContent = "";
+      }
+    }
+
+    fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+    .then(r => r.ok ? render("ok") : render("err"))
+    .catch(() => render("err"));
+  </script>
+</body>
+</html>
