@@ -39,25 +39,13 @@
     <p class="detail" id="detail"></p>
   </div>
 
-  <!--
-    Hidden iframe + form for cross-origin POST to the Rox webhook.
-    Unlike fetch({mode:"no-cors"}), a real <form target="iframe"> POST
-    is a plain cross-origin form submission — browsers have allowed
-    these since forever, no preflight, no CORS blocking, no opaque-
-    response weirdness. The iframe swallows the response so the user's
-    page doesn't navigate away.
-  -->
-  <iframe name="rox_sink" style="display:none" aria-hidden="true"></iframe>
-  <form id="feedbackForm"
-        action="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-318d6a1b"
-        method="POST"
-        enctype="application/x-www-form-urlencoded"
-        target="rox_sink"
-        style="display:none">
-    <input type="hidden" name="json" id="jsonField">
-  </form>
-
   <script>
+    // Cloudflare Worker proxy → Rox webhook. The proxy adds CORS headers
+    // and forwards the body to Rox as Content-Type: application/json,
+    // which the Rox webhook requires (and which browsers can't send
+    // direct because Rox doesn't return CORS headers on preflight).
+    const PROXY_URL = "https://rox-deep-dive-proxy.mel-boulos-97e.workers.dev";
+
     const params = new URLSearchParams(window.location.search);
     const payload = Object.fromEntries(params.entries());
 
@@ -91,19 +79,17 @@
       }
     }
 
-    // Serialize the full URL-params payload into the form's json field,
-    // then submit. The Rox webhook wraps this under trigger_data.payload;
-    // the Deep Dive Feedback agent reads trigger_data.payload.json and
-    // JSON.parse's it to recover action, signal_id, account_id, etc.
-    try {
-      document.getElementById("jsonField").value = JSON.stringify(payload);
-      document.getElementById("feedbackForm").submit();
-      // Optimistic: the iframe absorbs the response, so we can't read status.
-      // Rox webhooks are highly reliable once the POST leaves the browser.
+    // Real CORS POST, real JSON, real success/failure detection.
+    fetch(PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+    .then(r => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
       render("ok");
-    } catch (e) {
-      render("err");
-    }
+    })
+    .catch(() => render("err"));
   </script>
 </body>
 </html>
