@@ -40,10 +40,6 @@
   </div>
 
   <script>
-    // Cloudflare Worker proxy → Rox webhook. The proxy adds CORS headers
-    // and forwards the body to Rox as Content-Type: application/json,
-    // which the Rox webhook requires (and which browsers can't send
-    // direct because Rox doesn't return CORS headers on preflight).
     const PROXY_URL = "https://rox-deep-dive-proxy.mel-boulos-97e.workers.dev";
 
     const params = new URLSearchParams(window.location.search);
@@ -55,7 +51,6 @@
       wrong:           { icon: "❌", label: "Wrong", copy: "Thanks — Deep Dive will learn from this." },
       already_working: { icon: "✅", label: "Already Working", copy: "Got it — we'll skip this motion next time." }
     };
-
     const meta = ACTION_META[payload.action] || { icon: "📨", label: "Feedback", copy: "Logged." };
 
     function render(state) {
@@ -79,7 +74,6 @@
       }
     }
 
-    // Real CORS POST, real JSON, real success/failure detection.
     fetch(PROXY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
