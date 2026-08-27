@@ -1,0 +1,4 @@
+name = "rox-deep-dive-proxy"
+main = "src/index.js"
+compatibility_date = "2026-08-27"
+account_id = "97e53ca181262b222f79bb27f0aef9aa"
