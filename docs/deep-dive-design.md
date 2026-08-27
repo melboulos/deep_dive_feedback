@@ -398,8 +398,8 @@ The ideal daily outcome is a small number of high-confidence, actionable expansi
 | Deep Dive agent | ✅ Saved, active, cron-scheduled |
 | Instructions | ✅ v4 (investigative voice, 4-step chain, relationship chip, Kyle-scoped) |
 | Locked Python renderer | ✅ Baked into instructions |
-| Cloudflare Worker relay | ✅ Deployed with CORS |
-| GitHub Pages boomerang | ✅ Deployed |
+| Cloudflare Worker relay | ✅ Deployed with CORS, **now git-tracked with CI/CD (see §25)** |
+| GitHub Pages boomerang | ✅ Deployed, git-backed |
 | Home publish | ✅ Working |
 | Email delivery (`send_email_as_user`) | ✅ Fixes graymail |
 | Deep Dive Feedback agent | ✅ Logic works, ⚠️ webhook blocked on Rox platform bug |
@@ -407,7 +407,58 @@ The ideal daily outcome is a small number of high-confidence, actionable expansi
 
 ---
 
+## 25. Repo & Deployment Infrastructure
+
+Both pieces of Deep Dive Feedback's supporting infrastructure — the GitHub Pages boomerang page and the Cloudflare Worker CORS relay — now live entirely in [`melboulos/deep_dive_feedback`](https://github.com/melboulos/deep_dive_feedback) as the single source of truth. Neither the Cloudflare dashboard nor GitHub Pages settings should be hand-edited going forward; every change flows through git.
+
+### Repo layout
+
+```
+deep_dive_feedback/
+├── index.html                        # GitHub Pages boomerang page
+├── worker/
+│   ├── src/index.js                  # Cloudflare Worker source (CORS relay → Rox webhook)
+│   └── wrangler.toml                 # Worker config: name, main entry, compatibility date, account_id
+├── docs/
+│   ├── deep-dive-design.md           # this document
+│   └── DEPLOYMENT.md                 # full deploy runbook, secrets setup, rollback steps
+└── .github/workflows/
+    └── deploy-worker.yml             # CI: deploys worker/ to Cloudflare on every push to main
+```
+
+### How each piece deploys
+
+| Component | Trigger | Mechanism |
+|---|---|---|
+| `index.html` | Push to `main` | GitHub Pages' built-in `pages-build-deployment` — no custom Action needed, was already git-backed |
+| `worker/src/index.js` | Push to `main` touching `worker/**` | Custom GitHub Action (`deploy-worker.yml`) using `cloudflare/wrangler-action@v3`, authenticated via repo secrets |
+
+### One-time setup completed
+
+- Pulled the live Worker script out of the Cloudflare dashboard via the Workers API (`GET /accounts/{account_id}/workers/scripts/{script_name}`) and committed it as the git baseline.
+- Added `worker/wrangler.toml` with explicit `main = "src/index.js"` and `account_id` — both required for Wrangler to run non-interactively in CI (relying only on the Action's `accountId` input was insufficient; Wrangler needs it in-file too).
+- Created a Cloudflare API token (Edit Cloudflare Workers template, no IP restriction — GitHub-hosted runners don't have stable IPs to allowlist) and stored it as the `CLOUDFLARE_API_TOKEN` repo secret, alongside `CLOUDFLARE_ACCOUNT_ID`.
+- Widened the GitHub PAT used for git auth to include the `workflow` scope — required specifically to push changes under `.github/workflows/`, which GitHub blocks by default on tokens without it.
+
+### Ongoing workflow
+
+```bash
+# edit worker/src/index.js
+git add worker/src/index.js
+git commit -m "describe the change"
+git push origin main
+# Action deploys to Cloudflare automatically, ~20s
+```
+
+Rollback is a `git revert` + push — both the Action and Pages redeploy the reverted state the same as any other push. Full runbook, including secret rotation and troubleshooting notes, lives in `docs/DEPLOYMENT.md`.
+
+### Known open item
+
+The Worker's CORS header is currently `Access-Control-Allow-Origin: "*"`, meaning any origin — not just the GitHub Pages boomerang page — can invoke the relay and trigger the Rox webhook. Low risk today given the relay only forwards structured feedback-button payloads, but worth tightening to the specific Pages origin (`https://melboulos.github.io`) if this relay's exposure ever needs hardening.
+
+---
+
 ## Changelog
 
-- **v4** (current) — investigative voice rules, locked 4-step "Why It Matters" chain, card-level relationship state (Direct/Internal/New), Gate 5 reclassified as non-kill modifier, deterministic Python renderer replacing `generate_webpage`, ocean/diving visual system locked, `send_email_as_user` replacing `generate_webpage`-driven email.
+- **v4** (current) — investigative voice rules, locked 4-step "Why It Matters" chain, card-level relationship state (Direct/Internal/New), Gate 5 reclassified as non-kill modifier, deterministic Python renderer replacing `generate_webpage`, ocean/diving visual system locked, `send_email_as_user` replacing `generate_webpage`-driven email. **Deployment infra**: Worker source and CI/CD pipeline added to git (§25) — Cloudflare dashboard is no longer the source of truth for `worker.js`.
 - **v2** — Kyle-scoped instructions, feedback-link-aware report, initial 5-gate sequence, HTML report via `generate_webpage`.
