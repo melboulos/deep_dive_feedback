@@ -13,18 +13,15 @@ export default {
       return new Response("Method not allowed", { status: 405, headers: cors });
     }
 
-    // Wrap the browser payload under `payload` so Rox delivers the fields
-    // at trigger_data.payload.<field> — matching how synthetic test runs
-    // are shaped when they successfully triggered the agent.
-    const incoming = await request.json().catch(() => ({}));
-    const wrapped = { payload: incoming };
-
     const rox = await fetch(
       "https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-318d6a1b",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(wrapped),
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        },
+        body: await request.text(),
       }
     );
 
