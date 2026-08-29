@@ -1,24 +1,21 @@
 # Deep Dive — how it works and why it isn't guessing
 
-A one-page walkthrough for sales and SE. All example data below (accounts, names, findings) is invented for illustration — not real customers.
+I built this to scan my accounts three mornings a week and surface a small number of high-confidence expansion plays — not summarize everything happening. Most of what it finds, I throw away. That's the point, and this walks through why. Every account, name, and finding below is invented for the walkthrough — none of it is a real customer.
 
 > Full specs: [`deep-dive-design.md`](./deep-dive-design.md) (the agent) · [`deep-dive-feedback-design.md`](./deep-dive-feedback-design.md) (the pill buttons)
 
-## What it does
+## 1. Which accounts I scan
 
-Deep Dive scans every account a rep owns, three mornings a week, looking for a recent, evidence-backed change that opens a new selling motion — not a summary of everything happening, a small number of high-confidence plays. Most of what it finds gets thrown away. That's the point.
+If I own the account, it's in scope. Owning an opportunity on an account means I own the account too, so in practice this is one rule, not two.
 
-## 1. Which accounts get scanned
-
-| Account | Rule | In scope? |
+| Account | Do I own it? | In scope? |
 |---|---|---|
-| Meridian Logistics | Owned by the rep | ✅ |
-| Northfield Bank | Not owned, but has a Commit-stage opportunity | ✅ |
-| Vantage Retail | Not owned, no open opportunity | ❌ |
+| Meridian Logistics | Yes | ✅ |
+| Vantage Retail | No | ❌ |
 
-Owned **or** a late-stage/closed-won opportunity gets an account in. Nothing else does — no territory-wide sweeps.
+The only other path in is an account I don't own yet, but where I own a Commit / Best Case / Closed Won opportunity on it — a defensive case for when account and opportunity ownership diverge, which doesn't really come up in our Salesforce setup.
 
-## 2. What it's actually searching for
+## 2. What I'm looking for
 
 Seven categories, each requiring a dated source — never a bare mention:
 
@@ -32,9 +29,9 @@ Seven categories, each requiring a dated source — never a bare mention:
 | Competitive signal | Cascade Insurance job post lists MongoDB for a new claims platform | Job posting, Aug 2026 |
 | Geo expansion | Ferro Manufacturing opened a new APAC distribution center | Trade press, May 2026 |
 
-None of these publish on their own. Every one still has to survive the gates below.
+None of these publish on their own for me — every one still has to survive the gates below.
 
-## 3. How it eliminates candidates
+## 3. How I eliminate candidates
 
 A real run, gate by gate:
 
@@ -50,7 +47,7 @@ A real run, gate by gate:
 | Rank & select top 5 | 6 → 5 | −1: lowest-scoring signal held for next run, never padded up to fill a quota |
 | **Published** | **5** | |
 
-Gates 4 and 5 don't remove signals — they reclassify or reweight. Worth saying out loud to the team: this isn't tuned for volume, it's tuned for confidence.
+Gates 4 and 5 don't remove signals — they reclassify or reweight. Worth saying out loud to the team: I'm not tuned for volume, I'm tuned for confidence.
 
 ## 4. One that survives vs. one that doesn't
 
@@ -72,9 +69,9 @@ Gates 4 and 5 don't remove signals — they reclassify or reweight. Worth saying
 | Specific whitespace? | ❌ Mandate covers the order platform Couchbase already runs |
 | — | Stops here. Remaining gates never run. |
 
-Both accounts had a real, dated, verifiable event. The second still got cut — the "already covered" test is where judgment, not just citation-checking, does the work.
+Both accounts had a real, dated, verifiable event. I still cut the second one — the "already covered" test is where judgment does the work, not just citation-checking.
 
-## 5. How contacts get matched
+## 5. How I match contacts
 
 | Order | Source | Example |
 |---|---|---|
@@ -83,15 +80,15 @@ Both accounts had a real, dated, verifiable event. The second still got cut — 
 | 3 | Public search | Only a plausible, unverified match → fallback |
 | 4 | Nothing checks out | Field left blank, never invented → **omit** |
 
-Fabricated LinkedIn URLs are treated as a defect, not a rounding error.
+I treat a fabricated LinkedIn URL as a defect, not a rounding error.
 
 ## 6. The four feedback pills
 
 | Pill | What it does |
 |---|---|
 | 🎯 Pursue | Drafts a grounded outreach email, saved to Home for review |
-| 👀 Watch | Logs it, notifies the rep, re-surfaces on a material update |
+| 👀 Watch | Logs it, notifies me, re-surfaces on a material update |
 | ❌ Wrong | Logs it, down-weights this account/motion/contact combination |
 | ✅ Already Working | Logs it, suppresses this motion in future runs |
 
-Clicking a pill hands off to a separate system (boomerang page → Cloudflare relay → Rox webhook → feedback agent) — see the feedback design doc for that architecture and the current single-tenant caveat.
+Clicking a pill hands off to a separate system — boomerang page → Cloudflare relay → Rox webhook → feedback agent. See the feedback design doc for that architecture and the current single-tenant caveat.

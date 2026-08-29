@@ -135,6 +135,8 @@ If store empty → `custom_store_set` with the seed map immediately (no interlea
 **Step 3 — Account universe**
 Fetch every account owned by the executing user, PLUS every account with an opportunity in Commit / Best Case / Closed Won stages owned by that user. Deduplicate by SFDC Account ID. Understand parent-subsidiary hierarchy.
 
+In this org's Salesforce setup, owning an opportunity implies owning the account, so in practice this is one condition, not two. The second clause is a defensive fallback for the rare case where account and opportunity ownership diverge.
+
 If empty → render empty-state variant, still publish, still email.
 
 **Step 4 — Existing coverage**
