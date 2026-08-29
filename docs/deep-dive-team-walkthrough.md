@@ -87,19 +87,26 @@ I treat a fabricated LinkedIn URL as a defect, not a rounding error.
 | Pill | What it does |
 |---|---|
 | 🎯 Pursue | Drafts a grounded outreach email, saved to Home for review |
-| 👀 Watch | Logs it, notifies me, re-surfaces on a material update |
-| ❌ Wrong | Logs it, down-weights this account/motion/contact combination |
-| ✅ Already Working | Logs it, suppresses this motion in future runs |
+| 👀 Watch | Logs it and sends me a confirmation notification |
+| ❌ Wrong | Logs it and sends me a confirmation notification |
+| ✅ Already Working | Logs it and sends me a confirmation notification |
 
 Clicking a pill hands off to a separate system — boomerang page → Cloudflare relay → Rox webhook → feedback agent. See the feedback design doc for that architecture and the current single-tenant caveat.
 
 Every click gets logged first, before anything else runs — so even if the next step fails, the disposition itself is never lost. Then it branches:
 
-- **Pursue** pulls the account's industry, size, existing contacts, and open or closed-won opportunities from Salesforce, then drafts a short, grounded email addressed to the named contact — referencing the actual trigger event, never a generic "just checking in." It saves to Home; nothing gets sent automatically, I still review and send it myself. If there's no contact email on file, the draft carries a placeholder rather than a guess.
-- **Watch, Wrong, and Already Working** each just send me a confirmation notification — no draft, no research step. The difference is entirely in what gets written to the log for future runs to read.
+- **🎯 Pursue** — pulls the account's industry, size, existing contacts, and open or closed-won opportunities from Salesforce, then drafts a short, grounded email addressed to the named contact, referencing the actual trigger event, never a generic "just checking in." It saves to Home; nothing sends automatically, I still review and send it myself. No contact email on file means the draft carries a placeholder rather than a guess.
+  *★ coming soon: nothing planned beyond this — it's already end-to-end.*
+
+- **👀 Watch** — logs the click and sends me a confirmation notification. That's it today.
+  *★ coming soon: Deep Dive reads this back, goes quiet on the signal, and re-surfaces it only when something material changes.*
+
+- **❌ Wrong** — logs the click and sends me a confirmation notification. That's it today.
+  *★ coming soon: Deep Dive reads this back and down-weights this account/motion/contact combination in future runs.*
+
+- **✅ Already Working** — logs the click and sends me a confirmation notification. That's it today.
+  *★ coming soon: Deep Dive reads this back and suppresses this specific motion at this account — other motions on the same account can still surface.*
 
 Example: I click Pursue on the Meridian Logistics signal from section 4. The draft that lands in my Home references the digital fulfillment launch specifically, is addressed to Sarah Chen, and asks for a 15-minute call — not a templated intro.
 
 One caveat worth flagging: today this all runs under one shared identity, so a Pursue draft technically lands in that identity's Home, not necessarily my own. That gets fixed once each rep has their own dedicated link.
-
-**Coming soon — none of this affects next run yet.** Watch, Wrong, and Already Working all log correctly today, but Deep Dive doesn't read that log back. So "already working" doesn't pull the account out of the list, "wrong" doesn't down-weight anything yet, and "watch" doesn't actually go quiet until an update — the signal can come back next run exactly as before. Worth setting that expectation with the team now: a pill click confirms and records your call, it doesn't yet change what shows up next Wednesday.
