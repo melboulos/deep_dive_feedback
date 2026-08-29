@@ -1,4 +1,4 @@
-# Deep Dive — how it works and why it isn't guessing
+# 🤿 Deep Dive - How it Works
 
 I built this to scan my accounts three mornings a week and surface a small number of high-confidence expansion plays — not summarize everything happening. Most of what it finds, I throw away. That's the point, and this walks through why. Every account, name, and finding below is invented for the walkthrough — none of it is a real customer.
 

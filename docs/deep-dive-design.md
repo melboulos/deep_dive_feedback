@@ -1,4 +1,4 @@
-# Deep Dive — Design Specification
+# 🤿 Deep Dive — Design Specification
 
 **Version:** dd-v1.0 · **Config version:** 1
 **Last updated:** August 28, 2026
@@ -6,7 +6,7 @@
 
 > This document covers the **Deep Dive** agent only — signal research, qualification, scoring, and report rendering/delivery. The four pill buttons on each signal card (🎯 Pursue, 👀 Watch, ❌ Wrong, ✅ Already Working) call out to a separate agent and infrastructure stack. See [`deep-dive-feedback-design.md`](./deep-dive-feedback-design.md) for that system's architecture, contracts, and current multi-tenant limitations. Deep Dive renders the pills as plain links and has no visibility into whether or how a rep clicked one.
 >
-> For a condensed, example-driven walkthrough to use with the sales/SE team (account criteria, search categories, the elimination pipeline with real numbers, a pass-vs-reject example, contact matching), see [`deep-dive-team-walkthrough.md`](./deep-dive-team-walkthrough.md).
+> For a condensed, example-driven walkthrough to use with the sales/SE team (account criteria, search categories, the elimination pipeline with real numbers, a pass-vs-reject example, contact matching), see [`deep-dive-how-it-works.md`](./deep-dive-how-it-works.md).
 
 ---
 
