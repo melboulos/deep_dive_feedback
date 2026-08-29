@@ -4,6 +4,8 @@
 **Last updated:** August 28, 2026
 **Status:** Live, cron-scheduled (Mon / Wed / Fri, 7:00 AM ET)
 
+> This document covers the **Deep Dive** agent only — signal research, qualification, scoring, and report rendering/delivery. The four pill buttons on each signal card (🎯 Pursue, 👀 Watch, ❌ Wrong, ✅ Already Working) call out to a separate agent and infrastructure stack. See [`deep-dive-feedback-design.md`](./deep-dive-feedback-design.md) for that system's architecture, contracts, and current multi-tenant limitations. Deep Dive renders the pills as plain links and has no visibility into whether or how a rep clicked one.
+
 ---
 
 ## 1. Purpose
@@ -431,14 +433,24 @@ Requires the rep's Gmail or Outlook mailbox to be connected in Rox. If unconnect
 
 ---
 
-## 13. Known Open Items
+## 13. Feedback Loop (separate system)
+
+Each signal card ships with 4 action pills — 🎯 Pursue, 👀 Watch, ❌ Wrong, ✅ Already Working. Clicking one hands off to a completely separate agent (**Deep Dive Feedback**) via a GitHub Pages boomerang page → Cloudflare Worker (CORS/WAF proxy) → Rox webhook. That agent logs the disposition, drafts a grounded outreach email on Pursue, and sends a notification for the other three actions.
+
+Deep Dive's only responsibility here is building the pill URLs correctly (§10.1 `feedback_url` + per-signal `account_id`, `primary_contact_email`, `primary_contact_name`) — it does not call the Feedback agent, does not know if a pill was clicked, and does not currently read back dispositions for suppression (see Feedback doc §15, open question).
+
+Full architecture, contracts, failure modes, and the current single-tenant/multi-tenant gap: [`deep-dive-feedback-design.md`](./deep-dive-feedback-design.md).
+
+---
+
+## 14. Known Open Items
 
 - **Patrick Gryzan vs Gryzen** — stored as `patrick.gryzan@couchbase.com` in the seed map. Spelling to be confirmed.
 - **New UPS rep under Jenn Lewis** — placeholder; awaiting name/email to add to seed map.
 
 ---
 
-## 14. Change Control
+## 15. Change Control
 
 - `config_version` — bumps when workflow logic changes (steps, gates, tool wiring, seed map).
 - `design_spec_version` — bumps when the rendered output changes (renderer code, payload schema, visual design).
@@ -447,6 +459,7 @@ Requires the rep's Gmail or Outlook mailbox to be connected in Rox. If unconnect
 
 ## Changelog
 
-- **dd-v1.0** (current) — Multi-rep ownership model: agent is duplicated per rep rather than variable-swapped for a single hardcoded target (`metadata.user.*` replaces `target_rep_*` variables). Introduces the org-scoped `support_by_rep` custom store (single-writer seed pattern, read by sibling agents) replacing the old single-rep CC lookup. Cron moved to Mon/Wed/Fri 7:00 AM ET (from Mon–Fri). Payload gains `workflow_run_id`, `triggered_at`, `config_version`, `design_spec_version`, `is_test_run` fields. Formal config_version / design_spec_version change-control scheme introduced (§14).
+- **dd-v1.0.1** (current, doc-only — no `config_version`/`design_spec_version` bump) — Split the Feedback Loop out into its own companion doc, `deep-dive-feedback-design.md`, and added §13 as a pointer/summary. Replaces the old "currently blocked" framing with an accurate description of the live boomerang → Cloudflare Worker → Rox webhook → Feedback agent chain.
+- **dd-v1.0** — Multi-rep ownership model: agent is duplicated per rep rather than variable-swapped for a single hardcoded target (`metadata.user.*` replaces `target_rep_*` variables). Introduces the org-scoped `support_by_rep` custom store (single-writer seed pattern, read by sibling agents) replacing the old single-rep CC lookup. Cron moved to Mon/Wed/Fri 7:00 AM ET (from Mon–Fri). Payload gains `workflow_run_id`, `triggered_at`, `config_version`, `design_spec_version`, `is_test_run` fields. Formal config_version / design_spec_version change-control scheme introduced (§14).
 - **v4** — investigative voice rules, locked 4-step "Why It Matters" chain, card-level relationship state (Direct/Internal/New), Gate 5 reclassified as non-kill modifier, deterministic Python renderer replacing `generate_webpage`, ocean/diving visual system locked, `send_email_as_user` replacing `generate_webpage`-driven email. Deployment infra: Worker source and CI/CD pipeline added to git — Cloudflare dashboard no longer the source of truth for `worker.js`.
 - **v2** — Kyle-scoped instructions, feedback-link-aware report, initial 5-gate sequence, HTML report via `generate_webpage`.
