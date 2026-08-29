@@ -6,7 +6,7 @@ I built this to scan my accounts three mornings a week and surface a small numbe
 
 ## 1. Which accounts I scan
 
-If I own the account, it's in scope. Owning an opportunity on an account means I own the account too, so in practice this is one rule, not two.
+The rule is simple: if I own the account, it's in scope. In our Salesforce setup, owning an opportunity on an account already means I own the account, so day to day this really comes down to one question, not two.
 
 | Account | Do I own it? | In scope? |
 |---|---|---|
@@ -82,7 +82,7 @@ Both accounts had a real, dated, verifiable event. I still cut the second one �
 
 I treat a fabricated LinkedIn URL as a defect, not a rounding error.
 
-## 6. The four feedback pills
+## 6. What happens when I click a pill
 
 | Pill | What it does |
 |---|---|
@@ -92,3 +92,12 @@ I treat a fabricated LinkedIn URL as a defect, not a rounding error.
 | ✅ Already Working | Logs it, suppresses this motion in future runs |
 
 Clicking a pill hands off to a separate system — boomerang page → Cloudflare relay → Rox webhook → feedback agent. See the feedback design doc for that architecture and the current single-tenant caveat.
+
+Every click gets logged first, before anything else runs — so even if the next step fails, the disposition itself is never lost. Then it branches:
+
+- **Pursue** pulls the account's industry, size, existing contacts, and open or closed-won opportunities from Salesforce, then drafts a short, grounded email addressed to the named contact — referencing the actual trigger event, never a generic "just checking in." It saves to Home; nothing gets sent automatically, I still review and send it myself. If there's no contact email on file, the draft carries a placeholder rather than a guess.
+- **Watch, Wrong, and Already Working** each just send me a confirmation notification — no draft, no research step. The difference is entirely in what gets written to the log for future runs to read.
+
+Example: I click Pursue on the Meridian Logistics signal from section 4. The draft that lands in my Home references the digital fulfillment launch specifically, is addressed to Sarah Chen, and asks for a 15-minute call — not a templated intro.
+
+One caveat worth flagging: today this all runs under one shared identity, so a Pursue draft technically lands in that identity's Home, not necessarily my own. That gets fixed once each rep has their own dedicated link.
