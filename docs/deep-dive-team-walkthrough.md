@@ -101,3 +101,5 @@ Every click gets logged first, before anything else runs — so even if the next
 Example: I click Pursue on the Meridian Logistics signal from section 4. The draft that lands in my Home references the digital fulfillment launch specifically, is addressed to Sarah Chen, and asks for a 15-minute call — not a templated intro.
 
 One caveat worth flagging: today this all runs under one shared identity, so a Pursue draft technically lands in that identity's Home, not necessarily my own. That gets fixed once each rep has their own dedicated link.
+
+**Coming soon — none of this affects next run yet.** Watch, Wrong, and Already Working all log correctly today, but Deep Dive doesn't read that log back. So "already working" doesn't pull the account out of the list, "wrong" doesn't down-weight anything yet, and "watch" doesn't actually go quiet until an update — the signal can come back next run exactly as before. Worth setting that expectation with the team now: a pill click confirms and records your call, it doesn't yet change what shows up next Wednesday.
