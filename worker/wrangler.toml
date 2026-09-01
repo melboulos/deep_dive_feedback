@@ -3,12 +3,10 @@ main = "src/index.js"
 compatibility_date = "2026-08-27"
 account_id = "97e53ca181262b222f79bb27f0aef9aa"
 
-# KV namespace: rep routing table (user_id → webhook_url + metadata)
 [[kv_namespaces]]
 binding = "ROX_ROUTING"
-id = "REPLACE_WITH_ROX_ROUTING_ID"
+id = "b5084162327642029f73ecbae632e1bb"
 
-# KV namespace: rolling 7-day log of fail-open events (unknown user_id)
 [[kv_namespaces]]
 binding = "ROX_EVENTS"
-id = "REPLACE_WITH_ROX_EVENTS_ID"
+id = "99a868b608a5490f9f00de524c733497"
