@@ -1,14 +1,15 @@
 // worker/src/index.js
-// Deep Dive Feedback proxy with live-editable rep routing.
+// Deep Dive Feedback proxy with live-editable rep routing + booking URL injection.
 //
 // Routes:
-//   POST /            → forward to per-rep Rox webhook based on payload.user_id
+//   POST /            → route to per-rep Rox webhook based on payload.user_id,
+//                       inject rep's booking_url into payload before forwarding
 //   OPTIONS /         → CORS preflight for the boomerang page
 //   GET  /admin       → HTML admin page (basic auth)
 //   POST /admin/save  → upsert or remove a rep in KV (basic auth)
 //
 // Bindings:
-//   ROX_ROUTING   — KV namespace: user_id → { name, user_id, webhook_url }
+//   ROX_ROUTING   — KV namespace: user_id → { name, user_id, webhook_url, booking_url }
 //   ROX_EVENTS    — KV namespace: recent unknown-user_id events (7d TTL)
 //   ADMIN_PASSWORD — secret; used by basic auth on /admin
 
@@ -55,12 +56,14 @@ async function handleProxy(request, env) {
   if (request.method !== "POST")
     return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
 
-  const body = await request.text();
+  const rawBody = await request.text();
   let userId = null;
+  let parsed = null;
   try {
-    userId = JSON.parse(body).user_id;
+    parsed = JSON.parse(rawBody);
+    userId = parsed.user_id;
   } catch (_) {
-    /* leave userId null; will fall back to default */
+    // fall through — will forward raw and let Rox reject
   }
 
   const mappedJson = userId ? await env.ROX_ROUTING.get(userId) : null;
@@ -77,10 +80,18 @@ async function handleProxy(request, env) {
     );
   }
 
+  // If the rep has a configured booking_url and the incoming body is valid JSON,
+  // inject it into the payload so the Rox agent can use it in the meeting ask.
+  let bodyToForward = rawBody;
+  if (mapped?.booking_url && parsed && typeof parsed === "object") {
+    parsed.booking_url = mapped.booking_url;
+    bodyToForward = JSON.stringify(parsed);
+  }
+
   const rox = await fetch(target, {
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": BROWSER_UA },
-    body,
+    body: bodyToForward,
   });
 
   return new Response(await rox.text(), {
@@ -109,7 +120,6 @@ async function listReps(env) {
 async function listEvents(env) {
   const list = await env.ROX_EVENTS.list({ prefix: "unknown:" });
   const events = [];
-  // Take the newest 20 (keys are timestamp-ordered ascending; reverse then slice).
   for (const key of list.keys.slice(-20).reverse()) {
     const raw = await env.ROX_EVENTS.get(key.name);
     if (!raw) continue;
@@ -136,13 +146,14 @@ async function renderAdmin(env) {
         <td>${escapeHtml(r.name || "")}</td>
         <td><code>${escapeHtml(r.user_id)}</code></td>
         <td><code class="wrap">${escapeHtml(r.webhook_url || "")}</code></td>
+        <td><code class="wrap">${escapeHtml(r.booking_url || "")}</code></td>
         <td><button class="danger" onclick="removeRep('${escapeHtml(
           r.user_id
         )}', '${escapeHtml(r.name || "")}')">Remove</button></td>
       </tr>`
         )
         .join("")
-    : `<tr><td colspan="4" class="muted">No reps yet — add one below.</td></tr>`;
+    : `<tr><td colspan="5" class="muted">No reps yet — add one below.</td></tr>`;
 
   const eventRows = events.length
     ? events
@@ -161,7 +172,7 @@ async function renderAdmin(env) {
   <title>Deep Dive Feedback — Rep Routing</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 960px; margin: 32px auto; padding: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1080px; margin: 32px auto; padding: 20px; }
     h1 { margin-top: 0; }
     h2 { margin-top: 32px; font-size: 16px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -180,6 +191,7 @@ async function renderAdmin(env) {
     .events { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; border-radius: 6px; font-size: 13px; }
     .events ul { margin: 0; padding-left: 20px; }
     .muted { color: #999; }
+    .hint { font-size: 12px; color: #888; margin-top: 4px; }
     @media (prefers-color-scheme: dark) {
       body { background: #111; color: #eee; }
       th { background: #1c1c1e; }
@@ -192,11 +204,11 @@ async function renderAdmin(env) {
   </style>
 </head><body>
   <h1>Deep Dive Feedback — Rep Routing</h1>
-  <p class="muted">Each rep listed here has their own Rox webhook URL. Deep Dive clicks are routed by <code>user_id</code>. Reps not listed here fall through to the default webhook (Mel Boulos).</p>
+  <p class="muted">Each rep listed here has their own Rox webhook URL. Deep Dive clicks are routed by <code>user_id</code>. Reps not listed here fall through to the default webhook (Mel Boulos). If a rep has a <code>booking_url</code> configured, it's injected into the payload as <code>booking_url</code> so the Rox agent can insert a one-click booking link in the draft email.</p>
 
   <h2>Current reps (${reps.length})</h2>
   <table>
-    <thead><tr><th>Name</th><th>User ID</th><th>Webhook URL</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>User ID</th><th>Webhook URL</th><th>Booking URL</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
 
@@ -205,6 +217,9 @@ async function renderAdmin(env) {
     <label>Name<input name="name" required placeholder="Jane Doe"></label>
     <label>rox_user_id<input name="user_id" required placeholder="e58b527c-…"></label>
     <label class="wide">Webhook URL<input name="webhook_url" required placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…"></label>
+    <label class="wide">Booking URL (optional)<input name="booking_url" placeholder="https://calendly.com/jane-doe/30min">
+      <span class="hint">If set, the Rox agent will insert this link in the meeting-ask paragraph of the draft email. Leave blank to fall back to inline calendar slot text.</span>
+    </label>
     <button type="submit">Save rep</button>
   </form>
 
@@ -215,7 +230,12 @@ async function renderAdmin(env) {
     async function saveRep(e) {
       e.preventDefault();
       const form = e.target;
-      const body = { name: form.name.value.trim(), user_id: form.user_id.value.trim(), webhook_url: form.webhook_url.value.trim() };
+      const body = {
+        name: form.name.value.trim(),
+        user_id: form.user_id.value.trim(),
+        webhook_url: form.webhook_url.value.trim(),
+        booking_url: form.booking_url.value.trim() || null,
+      };
       const r = await fetch("/admin/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) location.reload();
       else alert("Save failed: " + (await r.text()));
@@ -243,7 +263,7 @@ async function saveRep(request, env) {
   } catch (_) {
     return new Response("invalid JSON", { status: 400 });
   }
-  const { name, user_id, webhook_url, _delete } = payload;
+  const { name, user_id, webhook_url, booking_url, _delete } = payload;
   if (!user_id) return new Response("user_id required", { status: 400 });
 
   if (_delete) {
@@ -252,10 +272,9 @@ async function saveRep(request, env) {
   }
 
   if (!webhook_url) return new Response("webhook_url required", { status: 400 });
-  await env.ROX_ROUTING.put(
-    user_id,
-    JSON.stringify({ name: name || "", user_id, webhook_url })
-  );
+  const row = { name: name || "", user_id, webhook_url };
+  if (booking_url) row.booking_url = booking_url;
+  await env.ROX_ROUTING.put(user_id, JSON.stringify(row));
   return new Response("saved");
 }
 
