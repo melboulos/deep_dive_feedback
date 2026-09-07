@@ -95,17 +95,13 @@ Clicking a pill hands off to a separate system — boomerang page → Cloudflare
 
 Every click gets logged first, before anything else runs — so even if the next step fails, the disposition itself is never lost. Then it branches:
 
-- **🎯 Pursue** — pulls the account's industry, size, existing contacts, and open or closed-won opportunities from Salesforce, then drafts a short, grounded email addressed to the named contact, referencing the actual trigger event, never a generic "just checking in." It saves to Home; nothing sends automatically, I still review and send it myself. No contact email on file means the draft carries a placeholder rather than a guess.
-  *★ coming soon: nothing planned beyond this — it's already end-to-end.*
+- **🎯 Pursue** — researches the account and signal (Salesforce + optional web research), scans Gmail for a real relationship (not just email existence), classifies relationship status and Couchbase fit, picks a target and pursuit strategy, pulls my actual calendar for 3 real meeting slots, then authors and saves a single reviewed draft to my Home — plus a maintainer-only diagnostic notification with the full research trail. Nothing sends automatically, I still review and send it myself. No verified contact email means the draft carries a placeholder rather than a guess, and a placeholder draft can never be marked ready to send.
 
-- **👀 Watch** — logs the click and sends me a confirmation notification. That's it today.
-  *★ coming soon: Deep Dive reads this back, goes quiet on the signal, and re-surfaces it only when something material changes.*
+- **👀 Watch** — logs the click to the feedback store and sends me a confirmation notification. The store entry is meant to tell Deep Dive to go quiet on this signal until something material changes — confirming whether Deep Dive's next-run logic actually reads and acts on that yet is still open.
 
-- **❌ Wrong** — logs the click and sends me a confirmation notification. That's it today.
-  *★ coming soon: Deep Dive reads this back and down-weights this account/motion/contact combination in future runs.*
+- **❌ Wrong** — logs the click to the feedback store and sends me a confirmation notification. The store entry is meant to tell Deep Dive to down-weight this account/motion/contact combination in future runs — confirming whether Deep Dive's next-run logic actually reads and acts on that yet is still open.
 
-- **✅ Already Working** — logs the click and sends me a confirmation notification. That's it today.
-  *★ coming soon: Deep Dive reads this back and suppresses this specific motion at this account — other motions on the same account can still surface.*
+- **✅ Already Working** — logs the click to the feedback store and sends me a confirmation notification. The store entry is meant to tell Deep Dive to suppress this specific motion at this account — confirming whether Deep Dive's next-run logic actually reads and acts on that yet is still open.
 
 Example: I click Pursue on the Meridian Logistics signal from section 4. The draft that lands in my Home references the digital fulfillment launch specifically, is addressed to Sarah Chen, and asks for a 15-minute call — not a templated intro.
 
