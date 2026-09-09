@@ -1,19 +1,21 @@
 // worker/src/index.js
 // Deep Dive Feedback proxy with live-editable rep routing + booking URL injection,
-// plus Fresh Catch Pursue signed forwarding.
+// plus Fresh Catch Pursue signed forwarding and per-rep Pursue webhook mapping.
 //
 // Routes:
-//   POST /                     → route to per-rep Rox webhook based on payload.user_id,
-//                                inject rep's booking_url into payload before forwarding
-//                                (Deep Dive Feedback flow — unchanged)
-//   POST /fresh-catch-pursue   → validate + rate-limit + sign + forward to the
-//                                authenticated Fresh Catch Pursue Rox webhook
-//   OPTIONS /                  → CORS preflight for the boomerang page
-//   GET  /admin                → HTML admin page (basic auth)
-//   POST /admin/save           → upsert or remove a rep in KV (basic auth)
+//   POST /                       → route to per-rep Rox webhook based on payload.user_id,
+//                                  inject rep's booking_url into payload before forwarding
+//                                  (Deep Dive Feedback flow — unchanged)
+//   POST /fresh-catch-pursue     → validate + rate-limit + sign + forward to the
+//                                  authenticated Fresh Catch Pursue Rox webhook
+//   GET  /pursue-webhooks.json   → public read-only map { rep_email_lower: pursue_url }
+//                                  consumed by Fresh Catch to render per-rep 🎯 Pursue pills
+//   OPTIONS /                    → CORS preflight for the boomerang page
+//   GET  /admin                  → HTML admin page (basic auth)
+//   POST /admin/save             → upsert or remove a rep in KV (basic auth)
 //
 // Bindings:
-//   ROX_ROUTING                    — KV namespace: user_id → { name, user_id, webhook_url, booking_url }
+//   ROX_ROUTING                    — KV namespace: user_id → { name, email, user_id, webhook_url, booking_url, pursue_webhook_url }
 //   ROX_EVENTS                     — KV namespace: recent unknown-user_id events (7d TTL)
 //                                     + pursue rate-limit buckets (2m TTL)
 //   ADMIN_PASSWORD                 — secret; used by basic auth on /admin
@@ -29,7 +31,7 @@ const BROWSER_UA =
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -146,11 +148,6 @@ async function handleFreshCatchPursue(request, env) {
   if (!rep_email || !EMAIL_RE.test(rep_email))
     return new Response("Invalid rep_email", { status: 400, headers: CORS_HEADERS });
 
-  // Note: booking_url lookup is not wired here yet. ROX_ROUTING is keyed by
-  // rox_user_id, not email, so there is no email→booking_url index today.
-  // The Pursue workflow handles booking_url absence gracefully (falls back to
-  // inline calendar slots / open-ended ask). If per-rep booking_url injection
-  // is desired later, add an email→booking_url KV or extend the rep record.
   const enriched = {
     pursuit_id,
     rep_email: rep_email.toLowerCase(),
@@ -168,12 +165,6 @@ async function handleFreshCatchPursue(request, env) {
 
   const headers = { "Content-Type": "application/json", "User-Agent": BROWSER_UA };
   if (env.ROX_PURSUE_WEBHOOK_SIGNING_KEY) {
-    // NOTE: confirm the exact header name Rox expects for signed webhooks by
-    // reading the Pursue workflow's trigger panel after save. Common patterns:
-    //   Authorization: Bearer <key>
-    //   X-Rox-Webhook-Key: <key>
-    //   X-Webhook-Signature: <key>
-    // Adjust the header name here to match whatever Rox documents.
     headers["Authorization"] = `Bearer ${env.ROX_PURSUE_WEBHOOK_SIGNING_KEY}`;
   }
 
@@ -183,9 +174,6 @@ async function handleFreshCatchPursue(request, env) {
     body: JSON.stringify(enriched),
   });
 
-  // Return a small JSON body so we can inspect Rox's response status if needed.
-  // The boomerang page uses no-cors so it can't read this, but it's useful when
-  // testing the Worker directly with curl.
   return new Response(
     JSON.stringify({ forwarded: true, rox_status: rox.status }),
     {
@@ -193,6 +181,38 @@ async function handleFreshCatchPursue(request, env) {
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     }
   );
+}
+
+// -------------------- public: pursue-webhooks.json --------------------
+// Read-only JSON map { rep_email_lower: pursue_webhook_url } consumed by Fresh Catch
+// to render per-rep 🎯 Pursue pills. No auth — safe because the URLs are non-secret
+// Rox webhook URLs already reachable from the email button.
+
+async function handlePursueWebhooksJson(request, env) {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  if (request.method !== "GET")
+    return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
+
+  const reps = await listReps(env);
+  const map = {};
+  for (const r of reps) {
+    if (!r.email || !r.pursue_webhook_url) continue;
+    const email = String(r.email).toLowerCase().trim();
+    const url = String(r.pursue_webhook_url).trim();
+    if (!EMAIL_RE.test(email)) continue;
+    if (!url.startsWith("http://") && !url.startsWith("https://")) continue;
+    map[email] = url;
+  }
+
+  return new Response(JSON.stringify(map), {
+    status: 200,
+    headers: {
+      ...CORS_HEADERS,
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 // -------------------- admin: data access --------------------
@@ -239,16 +259,18 @@ async function renderAdmin(env) {
           (r) => `
       <tr>
         <td>${escapeHtml(r.name || "")}</td>
+        <td><code>${escapeHtml(r.email || "")}</code></td>
         <td><code>${escapeHtml(r.user_id)}</code></td>
         <td><code class="wrap">${escapeHtml(r.webhook_url || "")}</code></td>
         <td><code class="wrap">${escapeHtml(r.booking_url || "")}</code></td>
+        <td><code class="wrap">${escapeHtml(r.pursue_webhook_url || "")}</code></td>
         <td><button class="danger" onclick="removeRep('${escapeHtml(
           r.user_id
         )}', '${escapeHtml(r.name || "")}')">Remove</button></td>
       </tr>`
         )
         .join("")
-    : `<tr><td colspan="5" class="muted">No reps yet — add one below.</td></tr>`;
+    : `<tr><td colspan="7" class="muted">No reps yet — add one below.</td></tr>`;
 
   const eventRows = events.length
     ? events
@@ -264,10 +286,10 @@ async function renderAdmin(env) {
   const html = `<!doctype html>
 <html><head>
   <meta charset="utf-8">
-  <title>Deep Dive Feedback — Rep Routing</title>
+  <title>Rox Rep Routing — Deep Dive + Fresh Catch Pursue</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1080px; margin: 32px auto; padding: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1200px; margin: 32px auto; padding: 20px; }
     h1 { margin-top: 0; }
     h2 { margin-top: 32px; font-size: 16px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -298,22 +320,26 @@ async function renderAdmin(env) {
     }
   </style>
 </head><body>
-  <h1>Deep Dive Feedback — Rep Routing</h1>
-  <p class="muted">Each rep listed here has their own Rox webhook URL. Deep Dive clicks are routed by <code>user_id</code>. Reps not listed here fall through to the default webhook (Mel Boulos). If a rep has a <code>booking_url</code> configured, it's injected into the payload as <code>booking_url</code> so the Rox agent can insert a one-click booking link in the draft email.</p>
+  <h1>Rox Rep Routing</h1>
+  <p class="muted">Each rep has their own Rox webhooks. <strong>Deep Dive Feedback</strong> is routed by <code>user_id</code> (falls back to Mel Boulos if not mapped). <strong>Fresh Catch Pursue</strong> is routed by <code>email</code> (silently omitted from the email if not mapped). If a rep has a <code>booking_url</code>, it's injected into Deep Dive payloads so the Rox agent can insert a one-click booking link in drafts.</p>
 
   <h2>Current reps (${reps.length})</h2>
   <table>
-    <thead><tr><th>Name</th><th>User ID</th><th>Webhook URL</th><th>Booking URL</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Email</th><th>User ID</th><th>Deep Dive Webhook</th><th>Booking URL</th><th>Pursue Webhook</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
 
   <h2>Add / update rep</h2>
   <form onsubmit="saveRep(event)">
     <label>Name<input name="name" required placeholder="Jane Doe"></label>
-    <label>rox_user_id<input name="user_id" required placeholder="e58b527c-…"></label>
-    <label class="wide">Webhook URL<input name="webhook_url" required placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…"></label>
+    <label>Email<input name="email" required type="email" placeholder="jane.doe@couchbase.com"></label>
+    <label class="wide">rox_user_id<input name="user_id" required placeholder="e58b527c-…"></label>
+    <label class="wide">Deep Dive Webhook URL<input name="webhook_url" required placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…"></label>
     <label class="wide">Booking URL (optional)<input name="booking_url" placeholder="https://calendly.com/jane-doe/30min">
-      <span class="hint">If set, the Rox agent will insert this link in the meeting-ask paragraph of the draft email. Leave blank to fall back to inline calendar slot text.</span>
+      <span class="hint">If set, injected into Deep Dive payloads as <code>booking_url</code>.</span>
+    </label>
+    <label class="wide">Fresh Catch Pursue Webhook URL (optional)<input name="pursue_webhook_url" placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…">
+      <span class="hint">If set, Fresh Catch renders a 🎯 Pursue pill on each contact row that fires this rep's own Pursue instance. Leave blank to silently omit the pill.</span>
     </label>
     <button type="submit">Save rep</button>
   </form>
@@ -327,9 +353,11 @@ async function renderAdmin(env) {
       const form = e.target;
       const body = {
         name: form.name.value.trim(),
+        email: form.email.value.trim(),
         user_id: form.user_id.value.trim(),
         webhook_url: form.webhook_url.value.trim(),
         booking_url: form.booking_url.value.trim() || null,
+        pursue_webhook_url: form.pursue_webhook_url.value.trim() || null,
       };
       const r = await fetch("/admin/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) location.reload();
@@ -358,7 +386,7 @@ async function saveRep(request, env) {
   } catch (_) {
     return new Response("invalid JSON", { status: 400 });
   }
-  const { name, user_id, webhook_url, booking_url, _delete } = payload;
+  const { name, email, user_id, webhook_url, booking_url, pursue_webhook_url, _delete } = payload;
   if (!user_id) return new Response("user_id required", { status: 400 });
 
   if (_delete) {
@@ -368,7 +396,9 @@ async function saveRep(request, env) {
 
   if (!webhook_url) return new Response("webhook_url required", { status: 400 });
   const row = { name: name || "", user_id, webhook_url };
+  if (email) row.email = String(email).toLowerCase().trim();
   if (booking_url) row.booking_url = booking_url;
+  if (pursue_webhook_url) row.pursue_webhook_url = pursue_webhook_url;
   await env.ROX_ROUTING.put(user_id, JSON.stringify(row));
   return new Response("saved");
 }
@@ -393,6 +423,10 @@ export default {
 
     if (url.pathname === "/fresh-catch-pursue") {
       return handleFreshCatchPursue(request, env);
+    }
+
+    if (url.pathname === "/pursue-webhooks.json") {
+      return handlePursueWebhooksJson(request, env);
     }
 
     return handleProxy(request, env);
