@@ -1,17 +1,24 @@
 // worker/src/index.js
-// Deep Dive Feedback proxy with live-editable rep routing + booking URL injection.
+// Deep Dive Feedback proxy with live-editable rep routing + booking URL injection,
+// plus Fresh Catch Pursue signed forwarding.
 //
 // Routes:
-//   POST /            → route to per-rep Rox webhook based on payload.user_id,
-//                       inject rep's booking_url into payload before forwarding
-//   OPTIONS /         → CORS preflight for the boomerang page
-//   GET  /admin       → HTML admin page (basic auth)
-//   POST /admin/save  → upsert or remove a rep in KV (basic auth)
+//   POST /                     → route to per-rep Rox webhook based on payload.user_id,
+//                                inject rep's booking_url into payload before forwarding
+//                                (Deep Dive Feedback flow — unchanged)
+//   POST /fresh-catch-pursue   → validate + rate-limit + sign + forward to the
+//                                authenticated Fresh Catch Pursue Rox webhook
+//   OPTIONS /                  → CORS preflight for the boomerang page
+//   GET  /admin                → HTML admin page (basic auth)
+//   POST /admin/save           → upsert or remove a rep in KV (basic auth)
 //
 // Bindings:
-//   ROX_ROUTING   — KV namespace: user_id → { name, user_id, webhook_url, booking_url }
-//   ROX_EVENTS    — KV namespace: recent unknown-user_id events (7d TTL)
-//   ADMIN_PASSWORD — secret; used by basic auth on /admin
+//   ROX_ROUTING                    — KV namespace: user_id → { name, user_id, webhook_url, booking_url }
+//   ROX_EVENTS                     — KV namespace: recent unknown-user_id events (7d TTL)
+//                                     + pursue rate-limit buckets (2m TTL)
+//   ADMIN_PASSWORD                 — secret; used by basic auth on /admin
+//   ROX_PURSUE_WEBHOOK_URL         — secret/var; Rox-generated URL for the Fresh Catch Pursue workflow
+//   ROX_PURSUE_WEBHOOK_SIGNING_KEY — secret; signing key issued by Rox when the Pursue workflow was saved
 
 const DEFAULT_WEBHOOK =
   "https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-318d6a1b";
@@ -48,7 +55,7 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// -------------------- feedback proxy --------------------
+// -------------------- feedback proxy (Deep Dive — unchanged) --------------------
 
 async function handleProxy(request, env) {
   if (request.method === "OPTIONS")
@@ -98,6 +105,94 @@ async function handleProxy(request, env) {
     status: rox.status,
     headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
   });
+}
+
+// -------------------- fresh catch pursue --------------------
+
+const PURSUIT_ID_RE = /^fc-\d{8}-[a-z0-9]{2}-[a-z0-9]{6}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Per-IP rate limit for Pursue: 10 req / 60s bucket, using ROX_EVENTS KV.
+// TTL is 120s so the bucket auto-expires shortly after the minute rolls over.
+async function pursueRateLimit(request, env) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const bucket = Math.floor(Date.now() / 60000);
+  const key = `pursue-rl:${ip}:${bucket}`;
+  const current = parseInt((await env.ROX_EVENTS.get(key)) || "0", 10);
+  if (current >= 10) return true;
+  await env.ROX_EVENTS.put(key, String(current + 1), { expirationTtl: 120 });
+  return false;
+}
+
+async function handleFreshCatchPursue(request, env) {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  if (request.method !== "POST")
+    return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
+
+  if (await pursueRateLimit(request, env))
+    return new Response("Rate limit exceeded", { status: 429, headers: CORS_HEADERS });
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400, headers: CORS_HEADERS });
+  }
+
+  const { pursuit_id, rep_email, contact_email, test } = payload;
+  if (!pursuit_id || !PURSUIT_ID_RE.test(pursuit_id))
+    return new Response("Invalid pursuit_id", { status: 400, headers: CORS_HEADERS });
+  if (!rep_email || !EMAIL_RE.test(rep_email))
+    return new Response("Invalid rep_email", { status: 400, headers: CORS_HEADERS });
+
+  // Note: booking_url lookup is not wired here yet. ROX_ROUTING is keyed by
+  // rox_user_id, not email, so there is no email→booking_url index today.
+  // The Pursue workflow handles booking_url absence gracefully (falls back to
+  // inline calendar slots / open-ended ask). If per-rep booking_url injection
+  // is desired later, add an email→booking_url KV or extend the rep record.
+  const enriched = {
+    pursuit_id,
+    rep_email: rep_email.toLowerCase(),
+    clicked_at: new Date().toISOString(),
+  };
+  if (contact_email) enriched.contact_email = contact_email;
+  if (test) enriched.test = test;
+
+  const target = env.ROX_PURSUE_WEBHOOK_URL;
+  if (!target)
+    return new Response("ROX_PURSUE_WEBHOOK_URL not configured", {
+      status: 500,
+      headers: CORS_HEADERS,
+    });
+
+  const headers = { "Content-Type": "application/json", "User-Agent": BROWSER_UA };
+  if (env.ROX_PURSUE_WEBHOOK_SIGNING_KEY) {
+    // NOTE: confirm the exact header name Rox expects for signed webhooks by
+    // reading the Pursue workflow's trigger panel after save. Common patterns:
+    //   Authorization: Bearer <key>
+    //   X-Rox-Webhook-Key: <key>
+    //   X-Webhook-Signature: <key>
+    // Adjust the header name here to match whatever Rox documents.
+    headers["Authorization"] = `Bearer ${env.ROX_PURSUE_WEBHOOK_SIGNING_KEY}`;
+  }
+
+  const rox = await fetch(target, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(enriched),
+  });
+
+  // Return a small JSON body so we can inspect Rox's response status if needed.
+  // The boomerang page uses no-cors so it can't read this, but it's useful when
+  // testing the Worker directly with curl.
+  return new Response(
+    JSON.stringify({ forwarded: true, rox_status: rox.status }),
+    {
+      status: 200,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    }
+  );
 }
 
 // -------------------- admin: data access --------------------
@@ -294,6 +389,10 @@ export default {
       const authFail = requireBasicAuth(request, env);
       if (authFail) return authFail;
       return saveRep(request, env);
+    }
+
+    if (url.pathname === "/fresh-catch-pursue") {
+      return handleFreshCatchPursue(request, env);
     }
 
     return handleProxy(request, env);
