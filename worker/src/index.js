@@ -5,7 +5,6 @@
 // Routes:
 //   POST /                       → route to per-rep Rox webhook based on payload.user_id,
 //                                  inject rep's booking_url into payload before forwarding
-//                                  (Deep Dive Feedback flow — unchanged)
 //   POST /fresh-catch-pursue     → validate + rate-limit + sign + forward to the
 //                                  authenticated Fresh Catch Pursue Rox webhook
 //   GET  /pursue-webhooks.json   → public read-only map { rep_email_lower: pursue_url }
@@ -79,18 +78,15 @@ async function handleProxy(request, env) {
   const mapped = mappedJson ? JSON.parse(mappedJson) : null;
   const target = mapped?.webhook_url || DEFAULT_WEBHOOK;
 
-  // Record a fail-open event when a user_id was supplied but not mapped.
   if (userId && !mapped) {
     const ts = new Date().toISOString();
     await env.ROX_EVENTS.put(
       `unknown:${ts}:${userId}`,
       JSON.stringify({ timestamp: ts, user_id: userId }),
-      { expirationTtl: 7 * 24 * 60 * 60 } // 7 days
+      { expirationTtl: 7 * 24 * 60 * 60 }
     );
   }
 
-  // If the rep has a configured booking_url and the incoming body is valid JSON,
-  // inject it into the payload so the Rox agent can use it in the meeting ask.
   let bodyToForward = rawBody;
   if (mapped?.booking_url && parsed && typeof parsed === "object") {
     parsed.booking_url = mapped.booking_url;
@@ -114,8 +110,6 @@ async function handleProxy(request, env) {
 const PURSUIT_ID_RE = /^fc-\d{8}-[a-z0-9]{2}-[a-z0-9]{6}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Per-IP rate limit for Pursue: 10 req / 60s bucket, using ROX_EVENTS KV.
-// TTL is 120s so the bucket auto-expires shortly after the minute rolls over.
 async function pursueRateLimit(request, env) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const bucket = Math.floor(Date.now() / 60000);
@@ -184,9 +178,6 @@ async function handleFreshCatchPursue(request, env) {
 }
 
 // -------------------- public: pursue-webhooks.json --------------------
-// Read-only JSON map { rep_email_lower: pursue_webhook_url } consumed by Fresh Catch
-// to render per-rep 🎯 Pursue pills. No auth — safe because the URLs are non-secret
-// Rox webhook URLs already reachable from the email button.
 
 async function handlePursueWebhooksJson(request, env) {
   if (request.method === "OPTIONS")
@@ -253,6 +244,13 @@ async function renderAdmin(env) {
   const reps = await listReps(env);
   const events = await listEvents(env);
 
+  // Serialize rep data for the client-side edit function. JSON.stringify inside
+  // a JS string requires escaping < and quotes to survive HTML embedding.
+  const repsJson = JSON.stringify(reps)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
+
   const rows = reps.length
     ? reps
         .map(
@@ -264,9 +262,12 @@ async function renderAdmin(env) {
         <td><code class="wrap">${escapeHtml(r.webhook_url || "")}</code></td>
         <td><code class="wrap">${escapeHtml(r.booking_url || "")}</code></td>
         <td><code class="wrap">${escapeHtml(r.pursue_webhook_url || "")}</code></td>
-        <td><button class="danger" onclick="removeRep('${escapeHtml(
-          r.user_id
-        )}', '${escapeHtml(r.name || "")}')">Remove</button></td>
+        <td>
+          <button class="edit" onclick="editRep('${escapeHtml(r.user_id)}')">Edit</button>
+          <button class="danger" onclick="removeRep('${escapeHtml(
+            r.user_id
+          )}', '${escapeHtml(r.name || "")}')">Remove</button>
+        </td>
       </tr>`
         )
         .join("")
@@ -301,14 +302,22 @@ async function renderAdmin(env) {
     form label { display: flex; flex-direction: column; font-size: 12px; color: #666; }
     form label.wide { grid-column: 1 / -1; }
     form input { margin-top: 4px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
-    form button { grid-column: 1 / -1; padding: 10px; background: #2563eb; color: white; border: 0; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    form input[readonly] { background: #eee; color: #666; }
+    form .form-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+    form button { flex: 1; padding: 10px; background: #2563eb; color: white; border: 0; border-radius: 6px; cursor: pointer; font-size: 14px; }
     form button:hover { background: #1d4ed8; }
+    form button.secondary { background: #6b7280; }
+    form button.secondary:hover { background: #4b5563; }
+    button.edit { background: #dbeafe; color: #1e40af; border: 0; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-right: 4px; }
+    button.edit:hover { background: #bfdbfe; }
     button.danger { background: #fee2e2; color: #b91c1c; border: 0; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
     button.danger:hover { background: #fecaca; }
     .events { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; border-radius: 6px; font-size: 13px; }
     .events ul { margin: 0; padding-left: 20px; }
     .muted { color: #999; }
     .hint { font-size: 12px; color: #888; margin-top: 4px; }
+    .form-title { grid-column: 1 / -1; font-size: 14px; font-weight: 600; color: #333; margin: 0 0 4px 0; }
+    .form-title .badge { display: inline-block; margin-left: 8px; padding: 2px 8px; background: #dbeafe; color: #1e40af; border-radius: 4px; font-size: 11px; font-weight: 600; }
     @media (prefers-color-scheme: dark) {
       body { background: #111; color: #eee; }
       th { background: #1c1c1e; }
@@ -316,7 +325,9 @@ async function renderAdmin(env) {
       code { color: #aaa; }
       form { background: #1c1c1e; }
       form input { background: #111; color: #eee; border-color: #333; }
+      form input[readonly] { background: #222; color: #888; }
       .events { background: #3a2a10; color: #f5d97a; border-color: #a86b00; }
+      .form-title { color: #eee; }
     }
   </style>
 </head><body>
@@ -329,8 +340,9 @@ async function renderAdmin(env) {
     <tbody>${rows}</tbody>
   </table>
 
-  <h2>Add / update rep</h2>
-  <form onsubmit="saveRep(event)">
+  <h2 id="form-heading">Add rep</h2>
+  <form id="rep-form" onsubmit="saveRep(event)">
+    <div class="form-title" id="form-title">Add a new rep <span class="badge" id="edit-badge" style="display:none;">EDITING</span></div>
     <label>Name<input name="name" required placeholder="Jane Doe"></label>
     <label>Email<input name="email" required type="email" placeholder="jane.doe@couchbase.com"></label>
     <label class="wide">rox_user_id<input name="user_id" required placeholder="e58b527c-…"></label>
@@ -341,13 +353,48 @@ async function renderAdmin(env) {
     <label class="wide">Fresh Catch Pursue Webhook URL (optional)<input name="pursue_webhook_url" placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…">
       <span class="hint">If set, Fresh Catch renders a 🎯 Pursue pill on each contact row that fires this rep's own Pursue instance. Leave blank to silently omit the pill.</span>
     </label>
-    <button type="submit">Save rep</button>
+    <div class="form-actions">
+      <button type="submit" id="submit-btn">Save rep</button>
+      <button type="button" class="secondary" id="cancel-btn" style="display:none;" onclick="cancelEdit()">Cancel edit</button>
+    </div>
   </form>
 
   <h2>Recent fail-open events (last 7 days)</h2>
   <div class="events"><ul>${eventRows}</ul></div>
 
   <script>
+    const REPS = ${repsJson};
+
+    function editRep(userId) {
+      const rep = REPS.find(r => r.user_id === userId);
+      if (!rep) return alert("Rep not found");
+      const form = document.getElementById("rep-form");
+      form.name.value = rep.name || "";
+      form.email.value = rep.email || "";
+      form.user_id.value = rep.user_id || "";
+      form.user_id.readOnly = true;
+      form.webhook_url.value = rep.webhook_url || "";
+      form.booking_url.value = rep.booking_url || "";
+      form.pursue_webhook_url.value = rep.pursue_webhook_url || "";
+      document.getElementById("form-heading").textContent = "Edit rep";
+      document.getElementById("form-title").firstChild.textContent = "Editing " + (rep.name || rep.user_id) + " ";
+      document.getElementById("edit-badge").style.display = "inline-block";
+      document.getElementById("submit-btn").textContent = "Update rep";
+      document.getElementById("cancel-btn").style.display = "block";
+      window.scrollTo({ top: document.getElementById("form-heading").offsetTop - 20, behavior: "smooth" });
+    }
+
+    function cancelEdit() {
+      const form = document.getElementById("rep-form");
+      form.reset();
+      form.user_id.readOnly = false;
+      document.getElementById("form-heading").textContent = "Add rep";
+      document.getElementById("form-title").firstChild.textContent = "Add a new rep ";
+      document.getElementById("edit-badge").style.display = "none";
+      document.getElementById("submit-btn").textContent = "Save rep";
+      document.getElementById("cancel-btn").style.display = "none";
+    }
+
     async function saveRep(e) {
       e.preventDefault();
       const form = e.target;
@@ -363,6 +410,7 @@ async function renderAdmin(env) {
       if (r.ok) location.reload();
       else alert("Save failed: " + (await r.text()));
     }
+
     async function removeRep(userId, name) {
       if (!confirm("Remove " + (name || userId) + " from routing?")) return;
       const r = await fetch("/admin/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId, _delete: true }) });
