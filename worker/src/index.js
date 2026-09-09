@@ -1,30 +1,41 @@
 // worker/src/index.js
-// Deep Dive Feedback proxy with live-editable rep routing + booking URL injection,
-// plus Fresh Catch Pursue signed forwarding and per-rep Pursue webhook mapping.
+// Deep Dive Feedback proxy + Fresh Catch Pursue per-rep click router.
 //
 // Routes:
-//   POST /                       → route to per-rep Rox webhook based on payload.user_id,
-//                                  inject rep's booking_url into payload before forwarding
-//   POST /fresh-catch-pursue     → validate + rate-limit + sign + forward to the
-//                                  authenticated Fresh Catch Pursue Rox webhook
+//   POST /                       → Deep Dive Feedback: route by payload.user_id
+//   POST /fresh-catch-pursue     → legacy single-webhook Pursue endpoint (still supported)
+//   GET  /pursue-click           → NEW: catches Fresh Catch email click (GET), looks up
+//                                  rep's Pursue webhook + signing key by email, builds
+//                                  canonical POST body, forwards to Rox, returns HTML
 //   GET  /pursue-webhooks.json   → public read-only map { rep_email_lower: pursue_url }
-//                                  consumed by Fresh Catch to render per-rep 🎯 Pursue pills
-//   OPTIONS /                    → CORS preflight for the boomerang page
+//                                  (used by Fresh Catch to decide whether to render pill)
+//   OPTIONS /                    → CORS preflight
 //   GET  /admin                  → HTML admin page (basic auth)
 //   POST /admin/save             → upsert or remove a rep in KV (basic auth)
 //
 // Bindings:
-//   ROX_ROUTING                    — KV namespace: user_id → { name, email, user_id, webhook_url, booking_url, pursue_webhook_url }
-//   ROX_EVENTS                     — KV namespace: recent unknown-user_id events (7d TTL)
-//                                     + pursue rate-limit buckets (2m TTL)
-//   ADMIN_PASSWORD                 — secret; used by basic auth on /admin
-//   ROX_PURSUE_WEBHOOK_URL         — secret/var; Rox-generated URL for the Fresh Catch Pursue workflow
-//   ROX_PURSUE_WEBHOOK_SIGNING_KEY — secret; signing key issued by Rox when the Pursue workflow was saved
+//   ROX_ROUTING            — KV: user_id → { name, email, user_id, webhook_url,
+//                                            booking_url, pursue_webhook_url,
+//                                            pursue_signing_key }
+//   ROX_EVENTS             — KV: fail-open events (7d) + pursue rate-limit buckets (2m)
+//   ADMIN_PASSWORD         — secret
+//   ROX_PURSUE_WEBHOOK_URL         — legacy single-webhook fallback (optional)
+//   ROX_PURSUE_WEBHOOK_SIGNING_KEY — legacy single-signing-key fallback (optional)
 
 const DEFAULT_WEBHOOK =
   "https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-318d6a1b";
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+
+// ⚠️ ROX WEBHOOK AUTH HEADER — VERIFY WITH ROX DOCS BEFORE PRODUCTION USE.
+// Common patterns Rox may use for signed webhooks; only one is right:
+//   "Authorization: Bearer <key>"     ← currently used, change if wrong
+//   "X-Rox-Signature: <key>"
+//   "X-Webhook-Signature: sha256=<hmac(key, body)>"
+// If Rox uses HMAC-over-body, replace buildAuthHeader() with an HMAC implementation.
+function buildAuthHeader(signingKey /*, body */) {
+  return { Authorization: `Bearer ${signingKey}` };
+}
 
 // -------------------- shared helpers --------------------
 
@@ -56,6 +67,9 @@ function escapeHtml(s) {
   }[c]));
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PURSUIT_ID_RE = /^fc-\d{8}-[a-z0-9]{2}-[a-z0-9]{6}$/;
+
 // -------------------- feedback proxy (Deep Dive — unchanged) --------------------
 
 async function handleProxy(request, env) {
@@ -70,9 +84,7 @@ async function handleProxy(request, env) {
   try {
     parsed = JSON.parse(rawBody);
     userId = parsed.user_id;
-  } catch (_) {
-    // fall through — will forward raw and let Rox reject
-  }
+  } catch (_) {}
 
   const mappedJson = userId ? await env.ROX_ROUTING.get(userId) : null;
   const mapped = mappedJson ? JSON.parse(mappedJson) : null;
@@ -105,10 +117,8 @@ async function handleProxy(request, env) {
   });
 }
 
-// -------------------- fresh catch pursue --------------------
-
-const PURSUIT_ID_RE = /^fc-\d{8}-[a-z0-9]{2}-[a-z0-9]{6}$/;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// -------------------- legacy single-webhook pursue endpoint --------------------
+// Kept for backwards compatibility. New Fresh Catch pills use /pursue-click.
 
 async function pursueRateLimit(request, env) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
@@ -143,6 +153,8 @@ async function handleFreshCatchPursue(request, env) {
     return new Response("Invalid rep_email", { status: 400, headers: CORS_HEADERS });
 
   const enriched = {
+    action: "pursue",
+    webhook_type: "fresh_catch_pursue",
     pursuit_id,
     rep_email: rep_email.toLowerCase(),
     clicked_at: new Date().toISOString(),
@@ -159,7 +171,7 @@ async function handleFreshCatchPursue(request, env) {
 
   const headers = { "Content-Type": "application/json", "User-Agent": BROWSER_UA };
   if (env.ROX_PURSUE_WEBHOOK_SIGNING_KEY) {
-    headers["Authorization"] = `Bearer ${env.ROX_PURSUE_WEBHOOK_SIGNING_KEY}`;
+    Object.assign(headers, buildAuthHeader(env.ROX_PURSUE_WEBHOOK_SIGNING_KEY));
   }
 
   const rox = await fetch(target, {
@@ -170,10 +182,147 @@ async function handleFreshCatchPursue(request, env) {
 
   return new Response(
     JSON.stringify({ forwarded: true, rox_status: rox.status }),
-    {
-      status: 200,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-    }
+    { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+  );
+}
+
+// -------------------- NEW: per-rep pursue-click boomerang --------------------
+// GET /pursue-click?pursuit_id=X&rep_email=Y[&contact_email=Z][&test=1]
+// Called directly by the Fresh Catch email pill click.
+
+function renderPursueLandingHtml({ ok, message, sub }) {
+  const color = ok ? "#166534" : "#991b1b";
+  const bg = ok ? "#dcfce7" : "#fee2e2";
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Fresh Catch Pursue</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         max-width: 520px; margin: 80px auto; padding: 20px; text-align: center; }
+  .card { background: ${bg}; color: ${color}; padding: 32px 24px; border-radius: 12px; }
+  h1 { margin: 0 0 12px 0; font-size: 22px; }
+  p { margin: 0; font-size: 14px; line-height: 1.5; opacity: 0.9; }
+</style></head>
+<body>
+  <div class="card">
+    <h1>${escapeHtml(message)}</h1>
+    <p>${escapeHtml(sub)}</p>
+  </div>
+</body></html>`;
+}
+
+async function handlePursueClick(request, env) {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  if (request.method !== "GET")
+    return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
+
+  if (await pursueRateLimit(request, env))
+    return new Response(
+      renderPursueLandingHtml({
+        ok: false,
+        message: "Slow down",
+        sub: "Too many Pursue clicks in a short time. Try again in a minute.",
+      }),
+      { status: 429, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+
+  const url = new URL(request.url);
+  const pursuit_id = (url.searchParams.get("pursuit_id") || "").trim();
+  const rep_email = (url.searchParams.get("rep_email") || "").trim().toLowerCase();
+  const contact_email = (url.searchParams.get("contact_email") || "").trim() || null;
+  const test = (url.searchParams.get("test") || "").trim() || null;
+
+  if (!PURSUIT_ID_RE.test(pursuit_id))
+    return new Response(
+      renderPursueLandingHtml({
+        ok: false,
+        message: "Invalid pursuit link",
+        sub: "The pursuit_id in this link is malformed. Please reach out to Mel.",
+      }),
+      { status: 400, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+  if (!EMAIL_RE.test(rep_email))
+    return new Response(
+      renderPursueLandingHtml({
+        ok: false,
+        message: "Invalid pursuit link",
+        sub: "The rep_email in this link is malformed. Please reach out to Mel.",
+      }),
+      { status: 400, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+
+  // Look up the rep by email (KV is keyed by user_id; scan to find email match).
+  const reps = await listReps(env);
+  const rep = reps.find((r) => (r.email || "").toLowerCase() === rep_email);
+
+  if (!rep || !rep.pursue_webhook_url) {
+    return new Response(
+      renderPursueLandingHtml({
+        ok: false,
+        message: "Pursue not configured",
+        sub: `No Pursue webhook is mapped for ${rep_email}. Ask the admin to add your Pursue webhook URL.`,
+      }),
+      { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+  }
+
+  // Build the canonical Rox POST body per the Pursue agent's spec.
+  const body = {
+    action: "pursue",
+    webhook_type: "fresh_catch_pursue",
+    pursuit_id,
+    rep_email,
+    clicked_at: new Date().toISOString(),
+  };
+  if (contact_email) body.contact_email = contact_email;
+  if (rep.booking_url) body.booking_url = rep.booking_url;
+  if (test) body.test = test;
+
+  const headers = { "Content-Type": "application/json", "User-Agent": BROWSER_UA };
+  if (rep.pursue_signing_key) {
+    Object.assign(headers, buildAuthHeader(rep.pursue_signing_key));
+  } else if (env.ROX_PURSUE_WEBHOOK_SIGNING_KEY) {
+    // Fallback to the legacy shared signing key when a per-rep key isn't set.
+    Object.assign(headers, buildAuthHeader(env.ROX_PURSUE_WEBHOOK_SIGNING_KEY));
+  }
+
+  let rox;
+  try {
+    rox = await fetch(rep.pursue_webhook_url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return new Response(
+      renderPursueLandingHtml({
+        ok: false,
+        message: "Couldn't reach Pursue",
+        sub: `Network error contacting the Pursue webhook. Try again in a moment. (${escapeHtml(String(err))})`,
+      }),
+      { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+  }
+
+  if (rox.status >= 200 && rox.status < 300) {
+    return new Response(
+      renderPursueLandingHtml({
+        ok: true,
+        message: "🎯 Pursue draft on the way",
+        sub: "Your Pursue agent is drafting the email now. Check your Rox Home in ~30 seconds.",
+      }),
+      { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    );
+  }
+
+  const responseText = (await rox.text()).slice(0, 400);
+  return new Response(
+    renderPursueLandingHtml({
+      ok: false,
+      message: "Pursue rejected the click",
+      sub: `Rox responded ${rox.status}. Please share this with Mel: ${responseText}`,
+    }),
+    { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } }
   );
 }
 
@@ -216,9 +365,7 @@ async function listReps(env) {
     if (!raw) continue;
     try {
       reps.push(JSON.parse(raw));
-    } catch (_) {
-      /* skip malformed */
-    }
+    } catch (_) {}
   }
   return reps.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 }
@@ -231,9 +378,7 @@ async function listEvents(env) {
     if (!raw) continue;
     try {
       events.push(JSON.parse(raw));
-    } catch (_) {
-      /* skip */
-    }
+    } catch (_) {}
   }
   return events;
 }
@@ -244,8 +389,6 @@ async function renderAdmin(env) {
   const reps = await listReps(env);
   const events = await listEvents(env);
 
-  // Serialize rep data for the client-side edit function. JSON.stringify inside
-  // a JS string requires escaping < and quotes to survive HTML embedding.
   const repsJson = JSON.stringify(reps)
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")
@@ -253,8 +396,11 @@ async function renderAdmin(env) {
 
   const rows = reps.length
     ? reps
-        .map(
-          (r) => `
+        .map((r) => {
+          const signingMask = r.pursue_signing_key
+            ? "•••••••• " + String(r.pursue_signing_key).slice(-4)
+            : "";
+          return `
       <tr>
         <td>${escapeHtml(r.name || "")}</td>
         <td><code>${escapeHtml(r.email || "")}</code></td>
@@ -262,24 +408,21 @@ async function renderAdmin(env) {
         <td><code class="wrap">${escapeHtml(r.webhook_url || "")}</code></td>
         <td><code class="wrap">${escapeHtml(r.booking_url || "")}</code></td>
         <td><code class="wrap">${escapeHtml(r.pursue_webhook_url || "")}</code></td>
+        <td><code>${escapeHtml(signingMask)}</code></td>
         <td>
           <button class="edit" onclick="editRep('${escapeHtml(r.user_id)}')">Edit</button>
-          <button class="danger" onclick="removeRep('${escapeHtml(
-            r.user_id
-          )}', '${escapeHtml(r.name || "")}')">Remove</button>
+          <button class="danger" onclick="removeRep('${escapeHtml(r.user_id)}', '${escapeHtml(r.name || "")}')">Remove</button>
         </td>
-      </tr>`
-        )
+      </tr>`;
+        })
         .join("")
-    : `<tr><td colspan="7" class="muted">No reps yet — add one below.</td></tr>`;
+    : `<tr><td colspan="8" class="muted">No reps yet — add one below.</td></tr>`;
 
   const eventRows = events.length
     ? events
         .map(
           (e) =>
-            `<li><code>${escapeHtml(e.timestamp)}</code> — unknown <code>${escapeHtml(
-              e.user_id
-            )}</code></li>`
+            `<li><code>${escapeHtml(e.timestamp)}</code> — unknown <code>${escapeHtml(e.user_id)}</code></li>`
         )
         .join("")
     : `<li class="muted">No fail-open events in the last 7 days.</li>`;
@@ -290,7 +433,7 @@ async function renderAdmin(env) {
   <title>Rox Rep Routing — Deep Dive + Fresh Catch Pursue</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1200px; margin: 32px auto; padding: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1280px; margin: 32px auto; padding: 20px; }
     h1 { margin-top: 0; }
     h2 { margin-top: 32px; font-size: 16px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -332,11 +475,11 @@ async function renderAdmin(env) {
   </style>
 </head><body>
   <h1>Rox Rep Routing</h1>
-  <p class="muted">Each rep has their own Rox webhooks. <strong>Deep Dive Feedback</strong> is routed by <code>user_id</code> (falls back to Mel Boulos if not mapped). <strong>Fresh Catch Pursue</strong> is routed by <code>email</code> (silently omitted from the email if not mapped). If a rep has a <code>booking_url</code>, it's injected into Deep Dive payloads so the Rox agent can insert a one-click booking link in drafts.</p>
+  <p class="muted"><strong>Deep Dive Feedback</strong> is routed by <code>user_id</code> (falls back to Mel Boulos if not mapped). <strong>Fresh Catch Pursue</strong> is routed by <code>email</code> — the Fresh Catch email pill hits <code>/pursue-click</code>, which looks up the rep's Pursue webhook URL and signing key here, then signs and forwards to Rox.</p>
 
   <h2>Current reps (${reps.length})</h2>
   <table>
-    <thead><tr><th>Name</th><th>Email</th><th>User ID</th><th>Deep Dive Webhook</th><th>Booking URL</th><th>Pursue Webhook</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Email</th><th>User ID</th><th>Deep Dive Webhook</th><th>Booking URL</th><th>Pursue Webhook</th><th>Pursue Key</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
 
@@ -348,10 +491,13 @@ async function renderAdmin(env) {
     <label class="wide">rox_user_id<input name="user_id" required placeholder="e58b527c-…"></label>
     <label class="wide">Deep Dive Webhook URL<input name="webhook_url" required placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…"></label>
     <label class="wide">Booking URL (optional)<input name="booking_url" placeholder="https://calendly.com/jane-doe/30min">
-      <span class="hint">If set, injected into Deep Dive payloads as <code>booking_url</code>.</span>
+      <span class="hint">Injected into Deep Dive AND Pursue payloads as <code>booking_url</code>.</span>
     </label>
     <label class="wide">Fresh Catch Pursue Webhook URL (optional)<input name="pursue_webhook_url" placeholder="https://webhooks.backend.rox.com/webhooks/w/workflow-webhook-…">
-      <span class="hint">If set, Fresh Catch renders a 🎯 Pursue pill on each contact row that fires this rep's own Pursue instance. Leave blank to silently omit the pill.</span>
+      <span class="hint">If set, Fresh Catch renders a 🎯 Pursue pill on each contact row.</span>
+    </label>
+    <label class="wide">Fresh Catch Pursue Signing Key (optional)<input name="pursue_signing_key" type="password" placeholder="Paste the signing key from the Pursue workflow's trigger panel">
+      <span class="hint">Required if the rep's Pursue webhook has <code>use_auth: true</code>. Leave blank if the Pursue webhook accepts unsigned requests.</span>
     </label>
     <div class="form-actions">
       <button type="submit" id="submit-btn">Save rep</button>
@@ -376,6 +522,7 @@ async function renderAdmin(env) {
       form.webhook_url.value = rep.webhook_url || "";
       form.booking_url.value = rep.booking_url || "";
       form.pursue_webhook_url.value = rep.pursue_webhook_url || "";
+      form.pursue_signing_key.value = rep.pursue_signing_key || "";
       document.getElementById("form-heading").textContent = "Edit rep";
       document.getElementById("form-title").firstChild.textContent = "Editing " + (rep.name || rep.user_id) + " ";
       document.getElementById("edit-badge").style.display = "inline-block";
@@ -405,6 +552,7 @@ async function renderAdmin(env) {
         webhook_url: form.webhook_url.value.trim(),
         booking_url: form.booking_url.value.trim() || null,
         pursue_webhook_url: form.pursue_webhook_url.value.trim() || null,
+        pursue_signing_key: form.pursue_signing_key.value.trim() || null,
       };
       const r = await fetch("/admin/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.ok) location.reload();
@@ -434,7 +582,7 @@ async function saveRep(request, env) {
   } catch (_) {
     return new Response("invalid JSON", { status: 400 });
   }
-  const { name, email, user_id, webhook_url, booking_url, pursue_webhook_url, _delete } = payload;
+  const { name, email, user_id, webhook_url, booking_url, pursue_webhook_url, pursue_signing_key, _delete } = payload;
   if (!user_id) return new Response("user_id required", { status: 400 });
 
   if (_delete) {
@@ -447,6 +595,7 @@ async function saveRep(request, env) {
   if (email) row.email = String(email).toLowerCase().trim();
   if (booking_url) row.booking_url = booking_url;
   if (pursue_webhook_url) row.pursue_webhook_url = pursue_webhook_url;
+  if (pursue_signing_key) row.pursue_signing_key = pursue_signing_key;
   await env.ROX_ROUTING.put(user_id, JSON.stringify(row));
   return new Response("saved");
 }
@@ -471,6 +620,10 @@ export default {
 
     if (url.pathname === "/fresh-catch-pursue") {
       return handleFreshCatchPursue(request, env);
+    }
+
+    if (url.pathname === "/pursue-click") {
+      return handlePursueClick(request, env);
     }
 
     if (url.pathname === "/pursue-webhooks.json") {
