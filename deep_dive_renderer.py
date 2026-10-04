@@ -2,6 +2,14 @@ import html as _html
 
 d = data
 
+# minimal_layout: opt-in for lean payloads (Deep Dive v2). When absent/false,
+# output is unchanged. When true, each card section renders only if its data
+# is present, so fields can be added back one at a time.
+MIN = bool(d.get("minimal_layout"))
+
+def has(sig, key):
+    return (not MIN) or bool(sig.get(key))
+
 NAVY = "#0d2b3f"; DEEP = "#1e4d6b"; TEAL = "#2e8b9e"; AQUA = "#4fb8c9"
 BG1 = "#e6f2f5"; BG2 = "#c7e4ec"; BG3 = "#a9d4e0"
 WARM = "#2f9e6a"; AMBER = "#e08a3c"; WATCH = "#3a7bb8"
@@ -88,9 +96,10 @@ def attribution_lines():
     run_line = (
         f'<div style="font-size:11px;color:{ATTR_GRAY};margin-top:12px;line-height:1.5;">'
         f'🤿 Deep Dive · Run {esc(d.get("generated_at",""))}'
-        f' · config_version={esc(d.get("config_version",""))}'
-        f' · design_spec_version={esc(d.get("design_spec_version",""))}'
-        f'</div>'
+        + ("" if MIN and not (d.get("config_version") or d.get("design_spec_version")) else
+           f' · config_version={esc(d.get("config_version",""))}'
+           f' · design_spec_version={esc(d.get("design_spec_version",""))}')
+        + f'</div>'
     )
     feedback_line = (
         f'<div style="font-size:11px;color:{ATTR_GRAY};margin-top:4px;line-height:1.5;">'
@@ -244,6 +253,12 @@ def numbered(items):
 def render_card(sig):
     st = sig.get("status","net_new")
     st_color = STATUS_COLOR.get(st, AMBER); st_light = STATUS_LIGHT.get(st, "#faeddd")
+    if MIN and not sig.get("status"):
+        st_color = TEAL
+    status_label = sig.get("status_label","") or ("New signal" if MIN else "")
+    score_html = ""
+    if has(sig, "score"):
+        score_html = f'<span style="display:inline-block;background:rgba(255,255,255,0.22);padding:4px 12px;border-radius:999px;letter-spacing:0.04em;font-weight:700;">SCORE {sig.get("score","")}</span>'
     parent_line = ""
     if sig.get("account_parent"):
         parent_line = (f'<div style="color:{MUTED};font-size:14px;margin-top:2px;">'
@@ -346,6 +361,57 @@ def render_card(sig):
     {fork_html}
     '''
 
+
+    motion_html = (f'''    <div style="display:inline-block;margin-top:12px;padding:6px 14px;
+         background:{HOVER_BG};color:{DEEP};border-radius:999px;font-size:12px;
+         font-weight:600;letter-spacing:0.04em;line-height:1.4;vertical-align:middle;">
+      {sig.get("motion_emoji","")}&nbsp;&nbsp;{esc(sig.get("motion_label",""))}
+    </div>
+''') if has(sig, "motion_label") else ""
+    what_changed = sig.get("what_changed_html","")
+    if MIN and not what_changed:
+        what_changed = esc(sig.get("summary",""))
+    source_html = ""
+    if MIN and sig.get("source_url"):
+        _u = str(sig.get("source_url") or "")
+        if _u.startswith("http://") or _u.startswith("https://"):
+            _d = sig.get("published_date") or ""
+            source_html = (
+                f'<div style="margin-top:12px;font-size:13px;color:{MUTED};line-height:1.5;">'
+                f'Source: <a href="{esc(_u)}" target="_blank" rel="noopener noreferrer" '
+                f'style="color:{DEEP};text-decoration:underline;">{esc(sig.get("source_name") or _u)}</a>'
+                + (f' &nbsp;·&nbsp; {esc(_d)}' if _d else '') + '</div>')
+    where_html = (f'''    <div style="margin-top:18px;">
+      <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
+           text-transform:uppercase;color:{TEAL};margin-bottom:6px;">🎯&nbsp;&nbsp;Where to Go</div>
+      <div style="font-size:15px;line-height:1.55;color:{BLACK};font-weight:600;">
+        {esc(sig.get("where_to_go",""))}
+      </div>
+    </div>
+''') if has(sig, "where_to_go") else ""
+    who_html = (f'''    <div style="margin-top:18px;">
+      <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
+           text-transform:uppercase;color:{TEAL};margin-bottom:6px;">👤&nbsp;&nbsp;Who to Talk To</div>
+      {contacts_html}
+    </div>
+''') if (not MIN or sig.get("contacts") or sig.get("watch_target_roles")) else ""
+    action_html = (f'''    <div style="margin-top:18px;padding:14px 18px;background:#fef4e9;
+         border-left:3px solid {AMBER};border-radius:6px;">
+      <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
+           text-transform:uppercase;color:{AMBER};margin-bottom:6px;">⚓&nbsp;&nbsp;Recommended Action</div>
+      <div style="font-size:15px;line-height:1.55;color:{BLACK};">{esc(sig.get("recommended_action",""))}</div>
+    </div>
+''') if has(sig, "recommended_action") else ""
+    survived_html = (f'''    <div style="margin-top:18px;padding-top:14px;border-top:1px dashed {BORDER};">
+      <div style="font-size:11px;font-weight:600;color:{MUTED};line-height:1.5;">
+        🧭&nbsp;&nbsp;{esc(sig.get("why_survived",""))}
+      </div>
+    </div>
+''') if has(sig, "why_survived") else ""
+    buttons_block = (f'''    <div style="margin-top:18px;">
+      {buttons_html}
+    </div>
+''') if (not MIN or d.get("feedback_url")) else ""
     return f'''
 <div style="background:#ffffff;border-radius:16px;overflow:hidden;
      box-shadow:0 4px 16px rgba(13,43,63,0.08);margin-bottom:24px;">
@@ -353,70 +419,39 @@ def render_card(sig):
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;">
       <tr>
         <td style="font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#ffffff;">
-          {esc(sig.get("status_label",""))}{material_update_chip(sig)}
+          {esc(status_label)}{material_update_chip(sig)}
         </td>
         <td align="right" style="font-size:11px;color:#ffffff;">
-          <span style="display:inline-block;background:rgba(255,255,255,0.22);padding:4px 12px;border-radius:999px;letter-spacing:0.04em;font-weight:700;">SCORE {sig.get("score","")}</span>
+          {score_html}
         </td>
       </tr>
     </table>
   </div>
   <div style="padding:24px;">
-    {icp_badge(sig)}
+    {icp_badge(sig) if has(sig, "icp_status") else ""}
     <div style="font-size:22px;font-weight:700;color:{BLACK};letter-spacing:-0.01em;">
       {esc(sig.get("account_name",""))}
     </div>
     {parent_line}
-    <div style="display:inline-block;margin-top:12px;padding:6px 14px;
-         background:{HOVER_BG};color:{DEEP};border-radius:999px;font-size:12px;
-         font-weight:600;letter-spacing:0.04em;line-height:1.4;vertical-align:middle;">
-      {sig.get("motion_emoji","")}&nbsp;&nbsp;{esc(sig.get("motion_label",""))}
-    </div>
-    {relationship_chip(sig)}
+{motion_html}    {relationship_chip(sig)}
     <div style="margin:16px 0;padding:14px 18px;background:{CALLOUT_BG};
          border-left:3px solid {AQUA};border-radius:6px;font-size:18px;
          font-weight:600;color:{BLACK};line-height:1.4;">
-      {esc(sig.get("motion_sentence",""))}
+      {esc(sig.get("motion_sentence") or (sig.get("headline") if MIN else ""))}
     </div>
     {material_rat_html}
     <div style="margin-top:18px;">
       <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
            text-transform:uppercase;color:{TEAL};margin-bottom:6px;">🌊&nbsp;&nbsp;What Changed</div>
-      <div style="font-size:15px;line-height:1.6;color:{BLACK};font-weight:500;">{sig.get("what_changed_html","")}</div>
+      <div style="font-size:15px;line-height:1.6;color:{BLACK};font-weight:500;">{what_changed}</div>
     </div>
     <div style="margin-top:18px;">
       <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
            text-transform:uppercase;color:{TEAL};margin-bottom:6px;">💡&nbsp;&nbsp;Why It Matters</div>
       <div style="font-size:15px;line-height:1.6;color:{BLACK};font-weight:500;">{esc(sig.get("why_it_matters",""))}</div>
     </div>
-    {reasoning_html}
-    <div style="margin-top:18px;">
-      <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
-           text-transform:uppercase;color:{TEAL};margin-bottom:6px;">🎯&nbsp;&nbsp;Where to Go</div>
-      <div style="font-size:15px;line-height:1.55;color:{BLACK};font-weight:600;">
-        {esc(sig.get("where_to_go",""))}
-      </div>
-    </div>
-    <div style="margin-top:18px;">
-      <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
-           text-transform:uppercase;color:{TEAL};margin-bottom:6px;">👤&nbsp;&nbsp;Who to Talk To</div>
-      {contacts_html}
-    </div>
-    <div style="margin-top:18px;padding:14px 18px;background:#fef4e9;
-         border-left:3px solid {AMBER};border-radius:6px;">
-      <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;
-           text-transform:uppercase;color:{AMBER};margin-bottom:6px;">⚓&nbsp;&nbsp;Recommended Action</div>
-      <div style="font-size:15px;line-height:1.55;color:{BLACK};">{esc(sig.get("recommended_action",""))}</div>
-    </div>
-    <div style="margin-top:18px;padding-top:14px;border-top:1px dashed {BORDER};">
-      <div style="font-size:11px;font-weight:600;color:{MUTED};line-height:1.5;">
-        🧭&nbsp;&nbsp;{esc(sig.get("why_survived",""))}
-      </div>
-    </div>
-    <div style="margin-top:18px;">
-      {buttons_html}
-    </div>
-  </div>
+    {reasoning_html if has(sig, "internal_couchbase_hypothesis") else ""}{source_html}
+{where_html}{who_html}{action_html}{survived_html}{buttons_block}  </div>
 </div>'''.strip()
 
 def status_chip(key, label, count):
@@ -464,6 +499,9 @@ def cards_with_section_headers():
     parts = []
     for s in d.get("signals", []):
         icp = s.get("icp_status", "non_target")
+        if MIN and not s.get("icp_status"):
+            parts.append(render_card(s))
+            continue
         if icp != current_group:
             count = d.get("icp_count", 0) if icp == "icp" else d.get("non_target_count", 0)
             parts.append(section_header(icp, count))
@@ -481,16 +519,17 @@ if d.get("empty"):
     No signals cleared the Deep Dive gates for {esc(d.get("target_rep_name",""))}'s book.
     That's a legitimate outcome — Deep Dive doesn't pad the report to hit a count.
   </div>
-  <div style="font-size:14px;color:{MUTED};margin-top:16px;">See you tomorrow morning.</div>
+  <div style="font-size:14px;color:{MUTED};margin-top:16px;">{"See you at the next scheduled run." if MIN else "See you tomorrow morning."}</div>
   {scoped_banner()}
   {test_banner()}
   {attribution_lines()}
 </div>'''
 else:
+    _sc = d.get("status_counts") or {}
     status_chips = "".join([
-        status_chip("warm","🟢 Warm path", d["status_counts"].get("warm",0)),
-        status_chip("net_new","🟠 Net-new", d["status_counts"].get("net_new",0)),
-        status_chip("watch","🔵 Watch", d["status_counts"].get("watch",0)),
+        status_chip("warm","🟢 Warm path", _sc.get("warm",0)),
+        status_chip("net_new","🟠 Net-new", _sc.get("net_new",0)),
+        status_chip("watch","🔵 Watch", _sc.get("watch",0)),
     ])
     motion_chips = "".join(motion_chip(m) for m in d.get("motion_chips",[]))
     cards = cards_with_section_headers()
@@ -498,27 +537,7 @@ else:
     if d.get("gmail_disclaimer"):
         disclaimer = (f'<div style="font-size:12px;color:{MUTED};margin-top:8px;">'
                      f'{esc(d["gmail_disclaimer"])}</div>')
-    body = f'''
-<div style="max-width:880px;margin:0 auto;padding:24px;">
-  <div style="background:linear-gradient(135deg,{NAVY} 0%,{DEEP} 55%,{TEAL} 100%);
-       background-color:{DEEP};
-       border-radius:20px;padding:36px 32px 44px 32px;color:#ffffff;
-       box-shadow:0 8px 32px rgba(13,43,63,0.25);">
-    <div style="font-size:56px;line-height:1;margin-bottom:12px;">🤿</div>
-    <div style="font-size:30px;font-weight:700;letter-spacing:-0.02em;line-height:1.15;color:#ffffff;">
-      Today's Deep Dive — {esc(d.get("target_rep_name",""))}
-    </div>
-    <div style="font-size:16px;color:#c7e4ec;margin-top:8px;font-weight:500;">
-      {esc(d.get("date_line",""))}
-    </div>
-    <div style="font-size:14px;color:{AQUA};margin-top:16px;font-style:italic;">
-      Deep Dive finds new business inside logos we already own.
-    </div>
-  </div>
-  {scoped_banner()}
-  {icp_priority_callout()}
-  {icp_field_warning_banner()}
-  <div style="background:#ffffff;border-radius:16px;padding:24px;margin-top:20px;
+    haul_html = (f'''  <div style="background:#ffffff;border-radius:16px;padding:24px;margin-top:20px;
        box-shadow:0 4px 16px rgba(13,43,63,0.06);">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;">
       <tr>
@@ -541,14 +560,35 @@ else:
       </tr>
     </table>
   </div>
-  <div style="margin-top:12px;">
+''') if (not MIN or d.get("status_counts")) else ""
+    body = f'''
+<div style="max-width:880px;margin:0 auto;padding:24px;">
+  <div style="background:linear-gradient(135deg,{NAVY} 0%,{DEEP} 55%,{TEAL} 100%);
+       background-color:{DEEP};
+       border-radius:20px;padding:36px 32px 44px 32px;color:#ffffff;
+       box-shadow:0 8px 32px rgba(13,43,63,0.25);">
+    <div style="font-size:56px;line-height:1;margin-bottom:12px;">🤿</div>
+    <div style="font-size:30px;font-weight:700;letter-spacing:-0.02em;line-height:1.15;color:#ffffff;">
+      Today's Deep Dive — {esc(d.get("target_rep_name",""))}
+    </div>
+    <div style="font-size:16px;color:#c7e4ec;margin-top:8px;font-weight:500;">
+      {esc(d.get("date_line",""))}
+    </div>
+    <div style="font-size:14px;color:{AQUA};margin-top:16px;font-style:italic;">
+      Deep Dive finds new business inside logos we already own.
+    </div>
+  </div>
+  {scoped_banner()}
+  {icp_priority_callout()}
+  {icp_field_warning_banner()}
+{haul_html}  <div style="margin-top:12px;">
     {cards}
   </div>
   <div style="margin-top:32px;padding:20px 24px;border-top:2px solid {BORDER};color:{MUTED};font-size:12px;line-height:1.6;text-align:center;">
     <div style="font-size:14px;color:{TEXT2};margin-bottom:6px;">
       🌊 Quality over quantity. If nothing meets the bar, this report will be short — or empty — by design.
     </div>
-    <div>Sources: Salesforce · Rox insights · Web research · Gmail</div>
+    <div>{"Sources: Rox insights · Web research" if MIN else "Sources: Salesforce · Rox insights · Web research · Gmail"}</div>
     {disclaimer}
     <div style="margin-top:8px;">Generated {esc(d.get("generated_at",""))}</div>
     {test_banner()}
